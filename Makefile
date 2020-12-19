@@ -23,10 +23,10 @@ export DOCKER_BUILDKIT=1
 help:
 >	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: publish-sem-rel
-publish-sem-rel:
-> git push origin master
-> semantic-release publish
+.PHONY: build-package
+build-package:
+#> @docker image prune -f
+> poetry build
 
 .PHONY: build-docker
 build-docker:
@@ -40,8 +40,13 @@ publish-docker: build-docker
 > docker tag wearep3r/apollo wearep3r/apollo:latest
 > docker push wearep3r/apollo:latest
 
+.PHONY: publish-semrel
+publish-sem-rel:
+#> git push origin master
+> semantic-release publish
+
 .PHONY: publish
-publish: publish-docker
+publish: publish-semrel publish-docker
 #> @docker image prune -f
 > echo "Publishing"
 

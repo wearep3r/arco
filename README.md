@@ -1,7 +1,7 @@
 <div style="text-align:center">
   <p align="center"><img src="https://gitlab.com/p3r.one/apollo/-/raw/v3.0.0/logo.png" alt="apollo" /></p>
   <p align="center"><b><a href="https://www.p3r.one">Website</a></b> — <b><a href="https://gitlab.com/p3r.one/apollo">Documentation</a></b> — <b><a href="https://gitlab.com/p3r.one/apollo">Source Code</a></b></p>
-  <p align="center"><b>apollo</b> - a python CLI to create and manage k3s clusters. Get going with Kubernetes in Docker or on any of our supported infrastructure providers in under 5 minutes.</p>
+  <p align="center"><b>apollo</b> - a python CLI to create and manage Kubernetes clusters. Get going with k3s in Docker or on any of our supported infrastructure providers in under 5 minutes.</p>
   <p align="center">
     <a href="https://github.com/wearep3r/apollo">
       <img src="https://img.shields.io/github/v/tag/wearep3r/apollo?label=version" />

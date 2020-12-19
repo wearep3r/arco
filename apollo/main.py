@@ -15,8 +15,12 @@ from typing import Optional, List
 import namesgenerator
 from dotenv import load_dotenv
 import pyperclip
+import datetime
 
-app = typer.Typer(help="apollo CLI")
+app = typer.Typer(help="apollo CLI", no_args_is_help=True)
+index_app = typer.Typer()
+app.add_typer(index_app, name="index")
+
 arc = {"space_dir": os.getenv("PWD")}
 
 spacefile = {}
@@ -344,6 +348,16 @@ def init(force: bool = typer.Option(False, "--force", "-f")):
         # Prompt for
         cluster_id = typer.prompt("Set a cluster id", default=cluster_name)
 
+        # Check if a cluster with this index already exists
+        if cluster_id in arc["index"]["clusters"]:
+            # Cluster exists
+            overwrite = typer.prompt(
+                "A cluster with that id already exists. Overwrite?",
+                abort=True,
+            )
+            typer.secho(
+                "Overwriting cluster index for {cluster_id}", fg=typer.colors.WHITE
+            )
         defaults["all"]["vars"]["id"] = cluster_id
 
     # Save .apollorc.yml
@@ -356,6 +370,20 @@ def init(force: bool = typer.Option(False, "--force", "-f")):
     except Exception as e:
         typer.secho(f"Could not save config: {e}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+    # Update index
+    index = arc["index"]
+
+    index["clusters"][cluster_id] = {
+        "path": arc["space_dir"],
+        "log": [{"action": "init", "issuer": "USER", "path": os.getcwd()}],
+        "updated": str(datetime.datetime.now().timestamp()),
+        "updated_by": "USER",
+        "created": str(datetime.datetime.now().timestamp()),
+        "created_by": "USER",
+    }
+
+    updateIndex(index)
 
 
 def version_callback(value: bool):
@@ -459,7 +487,65 @@ def k(ctx: typer.Context):
     runKubectl(command)
 
 
+@index_app.command("show")
+def index_show(item: str = "all"):
+    typer.echo(json.dumps(arc["index"], indent=4))
+
+
+def loadIndex():
+    # Check index exists
+    try:
+        if not os.path.isfile(arc["index_file"]):
+            index = {
+                "version": 1,
+                "clusters": {
+                    "apollo": {
+                        "path": "~/.apollo/clusters/apollo",
+                        "log": [],
+                        "updated": "",
+                        "updated_by": "",
+                        "created": "",
+                        "created_by": "",
+                    }
+                },
+            }
+
+            anyconfig.dump(index, arc["index_file"], "json")
+        else:
+            index = anyconfig.load(arc["index_file"], "json")
+        return index
+    except Exception as e:
+        typer.secho(
+            f"Couldn't load index from {arc['index_file']}: {e}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+
+
+def updateIndex(data: dict = {}):
+    index = loadIndex()
+
+    print(index)
+
+    updated_index = anyconfig.merge(index, data)
+    print(data)
+    print(updated_index)
+
+    try:
+        if updated_index:
+            anyconfig.dump(updated_index, arc["index_file"], "json")
+    except Exception as e:
+        typer.secho(
+            f"Couldn't update index at {arc['index_file']}: {e}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+
+    return updated_index
+
+
 @app.callback(invoke_without_command=True)
+@index_app.callback(invoke_without_command=True)
 def callback(
     verbosity: int = typer.Option(0, "--verbosity", "-v", help="Verbosity"),
     inventory: str = typer.Option(
@@ -492,11 +578,30 @@ def callback(
         str(Path(__file__).parent / "__init__.py")
     )
 
-    arc["config_dir"] = f"{home}/.apollo"
+    arc["config_dir"] = os.path.join(home, ".apollo")
     os.environ["APOLLO_CONFIG_DIR"] = arc["config_dir"]
 
-    arc["spaces_dir"] = f"{home}/.apollo/.spaces"
+    # Check config dir exists
+    if not os.path.exists(arc["config_dir"]):
+        try:
+            os.mkdir(arc["config_dir"])
+        except Exception as e:
+            typer.secho(
+                f"Couldn't create config directory at {arc['config_dir']}: {e}",
+                err=True,
+                fg=typer.colors.RED,
+            )
+
+    arc["index_file"] = os.path.join(arc["config_dir"], ".index.json")
+    os.environ["APOLLO_INDEX_FILE"] = arc["index_file"]
+
+    arc["index"] = loadIndex()
+
+    arc["spaces_dir"] = os.path.join(arc["config_dir"], ".spaces")
     os.environ["APOLLO_SPACES_DIR"] = arc["spaces_dir"]
+
+    arc["cluster_dir"] = os.path.join(arc["config_dir"], "clusters")
+    os.environ["APOLLO_CLUSTER_DIR"] = arc["cluster_dir"]
 
     arc["inventory"] = inventory
     os.environ["ANSIBLE_INVENTORY"] = arc["inventory"]
