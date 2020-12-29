@@ -1,0 +1,4 @@
+clusters:
+  default:
+    kubeconfig: ~/.kube/config
+    docker_host: unix:///var/run/docker.sock

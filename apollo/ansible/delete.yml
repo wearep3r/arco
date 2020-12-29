@@ -1,58 +1,51 @@
 ---
-- name: "deleting cluster"
-  hosts: localhost
-  gather_facts: yes
+- name: "deleting {{ apollo_cluster }}"
+  hosts: "{{ apollo_cluster }}:!kubernetes"
+  gather_facts: false
   connection: local
   tasks:
-    - set_fact:
-        blueprint: "{{ hostvars['localhost']['blueprint'] }}"
+    - name: debug
+      debug:
+        var: hostvars[inventory_hostname]
+        verbosity: 1
       tags:
         - delete
-      
-    - debug:
-        var: blueprint
-      tags:
-        - delete
+      when: "'kubernetes' not in group_names"
 
-    - debug:
-        var: hostvars['localhost']['blueprint']
-      tags:
-        - delete
-
-    - name: deleting master
+    - name: deleting server
       include_role:
-        name: "{{ hostvars['localhost']['blueprint']['master']['spec']['provider']['name'] }}/server/delete"
-        apply:
-          tags:
-            - delete
-            - master
-      vars:
-        blueprint: "{{ hostvars['localhost']['blueprint']['master'] }}"
-        group: master
-      tags:
-        - delete
-        - master
-
-    - name: deleting node
-      include_role:
-        name: "{{ hostvars['localhost']['blueprint']['node']['spec']['provider']['name'] }}/server/delete"
-        apply:
-          tags:
-            - delete
-            - node
-      vars:
-        blueprint: "{{ hostvars['localhost']['blueprint']['node'] }}"
-        group: node
-      tags:
-        - delete
-        - node
-
-    - name: updating inventory
-      include_role:
-        name: "inventory"
+        name: "{{ hostvars[inventory_hostname]['provider'] }}/server/delete"
         apply:
           tags:
             - delete
       tags:
         - delete
-        - save
+      when: "'kubernetes' not in group_names"
+
+- name: "deleting {{ apollo_cluster }} from space"
+  hosts: localhost
+  gather_facts: no
+  connection: local
+  tasks:
+    - name: deleting cluster inventory
+      file:
+        state: absent
+        path: "{{ apollo_space_dir }}/{{ apollo_cluster }}/inventory.yml"
+      tags:
+        - never
+        - delete
+      delegate_to: localhost
+
+    - name: deleting cluster kubeconfig
+      file:
+        state: absent
+        path: "{{ apollo_space_dir }}/{{ apollo_cluster }}/config"
+      tags:
+        - never
+        - delete
+      delegate_to: localhost
+
+    - name: refresh inventory
+      meta: refresh_inventory
+      tags:
+        - delete

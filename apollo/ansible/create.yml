@@ -1,47 +1,47 @@
 ---
-- name: "creating cluster"
+
+- name: "creating cluster '{{ apollo_cluster }}'"
   hosts: localhost
-  gather_facts: yes
+  gather_facts: no
   connection: local
   tasks:
-    - set_fact:
-        blueprint: "{{ hostvars['localhost']['blueprint'] }}"
+    - name: "creating cluster directory"
+      file:
+        path: "{{ apollo_space_dir }}/{{ apollo_cluster }}"
+        state: directory
+        mode: '0755'
       tags:
         - create
 
-    - name: creating master
+    - name: "setting cluster blueprint"
+      set_fact:
+        cluster_blueprint: "{{ config[apollo_cluster]['vars']['blueprint'] }}"
+      tags:
+        - create
+
+    - name: showing blueprint
+      debug:
+        var: cluster_blueprint
+        verbosity: 1
+
+    - name: creating resources
       include_role:
-        name: "{{ hostvars['localhost']['blueprint']['master']['spec']['provider']['name'] }}/server/create"
+        name: "{{ cluster_blueprint[item]['spec']['provider']['name'] }}/server/create"
         apply:
           tags:
             - create
-            - master
       vars:
-        blueprint: "{{ hostvars['localhost']['blueprint']['master'] }}"
-        group: master
+        blueprint: "{{cluster_blueprint[item] }}"
+        group: "{{ item }}"
       tags:
         - create
+      when:
+        - cluster_blueprint[item]['count'] > 0
+      with_items:
         - master
-      when:
-        - hostvars['localhost']['blueprint']['master']['count'] > 0
-
-    - name: creating node
-      include_role:
-        name: "{{ hostvars['localhost']['blueprint']['node']['spec']['provider']['name'] }}/server/create"
-        apply:
-          tags:
-            - create
-            - node
-      vars:
-        blueprint: "{{ hostvars['localhost']['blueprint']['node'] }}"
-        group: node
-      tags:
-        - create
         - node
-      when:
-        - hostvars['localhost']['blueprint']['node']['count'] > 0
 
-    - name: updating inventory
+    - name: creating inventory
       include_role:
         name: "inventory"
         apply:
@@ -50,3 +50,49 @@
       tags:
         - create
         - save
+
+    - name: saving cluster inventory
+      template:
+        src: "inventory.yml.j2"
+        dest: "{{ apollo_space_dir }}/{{ apollo_cluster }}/inventory.yml"
+      tags:
+        - never
+        - create
+
+    - name: refresh inventory
+      meta: refresh_inventory
+      tags:
+        - create
+
+- name: "installing cluster '{{ apollo_cluster }}'"
+  hosts: "{{ apollo_cluster }}:!kubernetes"
+  gather_facts: no
+  tasks:
+    - name: asserting nodes are up
+      wait_for_connection:
+      tags:
+        - create
+        - install
+
+    - name: setting node facts
+      setup:
+        filter: "*"
+      tags:
+        - always
+
+    - name: installing k3s
+      include_role:
+        #name: "{{ hostvars[inventory_hostname]['orchestrator'] }}"
+        name: k3s
+        allow_duplicates: no
+        apply:
+          tags:
+            - orchestrator
+            - k3s
+            - create
+      when:
+        - provider != 'docker'
+        - "'kubernetes' not in group_names"
+      tags:
+        - create
+        - install

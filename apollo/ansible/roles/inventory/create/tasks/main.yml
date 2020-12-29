@@ -1,0 +1,8 @@
+- name: saving cluster inventory
+  template:
+    src: "inventory.yml.j2"
+    dest: "{{ apollo_space_dir }}/{{ apollo_cluster }}/inventory.yml"
+  tags:
+    - never
+    - create
+  delegate_to: localhost

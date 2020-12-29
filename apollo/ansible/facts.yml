@@ -1,0 +1,20 @@
+- name: asserting node facts
+  block:
+    - name: asserting nodes are up
+      wait_for_connection:
+      tags:
+        - always
+
+    - name: setting node facts
+      setup:
+        filter: "*"
+      tags:
+        - always
+
+    - name: checking cluster exists
+      fail:
+        msg: "Cluster '{{ apollo_cluster }}' does not exist in the inventory. Please review your configuration"
+      when:
+        - apollo_cluster not in groups
+      tags:
+        - always

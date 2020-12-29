@@ -66,6 +66,12 @@
       --kubeconfig ~{{ ansible_user }}/.kube/config
   changed_when: true
 
+- name: Download kubeconfig
+  fetch:
+    src: ~{{ ansible_user }}/.kube/config
+    dest: "{{ apollo_space_dir }}/{{ apollo_cluster }}/"
+    flat: true
+
 - name: Create kubectl symlink
   file:
     src: /usr/local/bin/k3s

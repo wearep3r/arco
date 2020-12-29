@@ -60,3 +60,5 @@ _modules
 dist
 **/*pycache*
 .pytest*
+_demo
+_empty

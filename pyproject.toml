@@ -34,6 +34,7 @@ hcloud = "^1.10.0"
 namesgenerator = "^0.3"
 docker = "^4.4.0"
 pyperclip = "^1.8.1"
+loguru = "^0.5.3"
 
 [tool.poetry.scripts]
 apollo = "apollo.main:app"

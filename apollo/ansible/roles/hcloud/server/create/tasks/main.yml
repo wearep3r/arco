@@ -1,32 +1,45 @@
-- name: creating server
-  hcloud_server:
-    name: "{{ blueprint['spec']['meta']['name'] + master_index|default(1)|string }}"
-    server_type: "{{ blueprint['spec']['size'] }}"
-    image: "{{ blueprint['spec']['image'] }}"
-    location: "{{ blueprint['spec']['location'] }}"
-    ssh_keys: "{{ lookup('env','SSH_KEYS', allow_undefined=false).split(',') }}"
-    labels: "{{ blueprint['spec']['meta']['labels'] }}"
-    api_token: "{{ lookup('env','HCLOUD_TOKEN', allow_undefined=false) }}"
-    state: present
-  register: server
-  loop: "{{ range(1, blueprint['count'] + 1 )|list }}"
-  loop_control:
-    loop_var: master_index
+- name: "creating server" 
+  block:
+    - name: "creating {{ server_name }}" 
+      hcloud_server:
+        name: "{{ server_name }}"
+        server_type: "{{ blueprint['spec']['size'] | default('cx11', True) }}"
+        image: "{{ blueprint['spec']['image'] | default('ubuntu-20.04', True) }}"
+        location: "{{ blueprint['spec']['location'] | default('fsn1', True) }}"
+        ssh_keys: "{{ lookup('env','SSH_KEYS', allow_undefined=false).split(',') }}"
+        labels: "{{ blueprint['spec']['meta']['labels']  | default({'cluster': apollo_cluster, 'type': group}, True) }}"
+        api_token: "{{ lookup('env','HCLOUD_TOKEN', allow_undefined=false) }}"
+        state: present
+      register: servers
+      loop: "{{ range(1, blueprint['count'] + 1 )|list }}"
+      loop_control:
+        loop_var: master_index
+      vars:
+        server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
 
-- name: showing server
-  debug:
-    var: server
-    verbosity: 1
+    - name: showing server
+      debug:
+        var: servers
+        verbosity: 1
 
-- name: adding server to inventory
+- name: "adding {{ server_name }} to inventory"
   add_host:
     groups: 
       - "{{ group }}"
-      - cluster
-    hostname: "{{ server.hcloud_server['name'] }}"
-    ansible_host: "{{ server.hcloud_server['ipv4_address'] }}"
-    ansible_user: "root"
+      - "{{ apollo_cluster }}"
+    hostname: "{{ server_name }}"
+    ansible_connection: ssh
+    ansible_user: root
     ansible_port: 22
+    ansible_host: "{{ server.hcloud_server['ipv4_address'] }}"
+    provider: "hcloud"
+  with_items: "{{ servers.results }}"
+  vars:
+    server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
+  loop_control:
+    loop_var: server
+  tags:
+    - create
 
 - name: show inventory
   debug:

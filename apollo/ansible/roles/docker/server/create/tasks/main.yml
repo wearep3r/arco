@@ -1,31 +1,34 @@
 - name: "creating {{ server_name }}"
   block:
-    - community.general.docker_container:
+    - name: "creating {{ server_name }}"
+      community.general.docker_container:
         name: "{{ server_name }}"
-        image: "{{ blueprint['spec']['image'] }}"
-        command: server
+        image: "{{ blueprint['spec']['image'] | default('k3s:v1.19.5-k3s1', True) }}"
+        command: "server --https-listen-port {{ blueprint['port'] }}"
         state: started
-        #recreate: yes
+        recreate: yes
         privileged: yes
         container_default_behavior: compatibility
         tmpfs:
           - /run
           - /var/run
         exposed_ports:
-          - "6443"
+          - "{{ blueprint['port'] }}"
         ports:
-          - 6443:6443
+          - "{{ blueprint['port'] }}:{{ blueprint['port'] }}"
         volumes:
-          - k3s-server:/var/lib/rancher/k3s
-          - "{{ apollo_space_dir }}:/output"
-        labels: "{{ blueprint['spec']['meta']['labels'] }}"
+          - "{{ server_name }}:/var/lib/rancher/k3s"
+          - "{{ cluster_dir }}:/output"
+        labels: 
+          cluster: "{{ apollo_cluster }}"
+          type: "{{ group }}"
         env:
-          K3S_TOKEN: "{{ hostvars[inventory_hostname]['id'] | b64encode }}"
+          K3S_TOKEN: "{{ id | b64encode }}"
           K3S_KUBECONFIG_OUTPUT: /output/kubeconfig.yml
           K3S_KUBECONFIG_MODE: "666"
-      register: server
+      register: servers
       vars:
-        server_name: "{{ blueprint['spec']['meta']['name'] + master_index|default(1)|string }}"
+        server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
       when:
         - group == "master"
       loop: "{{ range(1, blueprint['count'] + 1 )|list }}"
@@ -34,19 +37,29 @@
       tags:
         - create
 
-    - name: showing server
+    - name: showing servers
       debug:
-        var: server
+        var: item['ansible_facts']['docker_container']['Name']
         verbosity: 1
+      tags:
+        - create
+      with_items: "{{ servers.results }}"
 
-    - name: "adding {{ item.ansible_facts.docker_container['Name'].split('/')[1] }} to inventory"
+    - name: "adding {{ server_name }} to inventory"
       add_host:
         groups: 
           - "{{ group }}"
-          - cluster
-        hostname: "{{ item.ansible_facts.docker_container['Name'].split('/')[1] }}"
+          - "{{ apollo_cluster }}"
+        hostname: "{{ server_name }}"
         ansible_connection: docker
-      with_items: "{{ server.results }}"
+        provider: "docker"
+      with_items: "{{ servers.results }}"
+      vars:
+        server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
+      loop_control:
+        loop_var: server
+      tags:
+        - create
 
 
 - name: "creating {{ server_name }}"
@@ -65,17 +78,40 @@
         env:
           K3S_URL: "https://{{ groups['master'][0] }}:6443"
           K3S_TOKEN: "{{ hostvars[inventory_hostname]['id'] | b64encode }}"
-      register: server
+      register: servers
       vars:
-        server_name: "{{ blueprint['spec']['meta']['name'] + master_index|default(1)|string }}"
+        server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
+      when:
+        - group == "node"
+      loop: "{{ range(1, blueprint['count'] + 1 )|list }}"
+      loop_control:
+        loop_var: master_index
+      tags:
+        - create
 
-    - name: adding server to inventory
+    - name: showing servers
+      debug:
+        var: item['ansible_facts']['docker_container']['Name']
+        verbosity: 1
+      tags:
+        - create
+      with_items: "{{ servers.results }}"
+
+    - name: "adding {{ server_name }} to inventory"
       add_host:
         groups: 
           - "{{ group }}"
-          - cluster
-        hostname: "{{ blueprint['spec']['meta']['name'] + index|default(1)|string }}"
+          - "{{ apollo_cluster }}"
+        hostname: "{{ server_name }}"
         ansible_connection: docker
+        provider: "docker"
+      with_items: "{{ servers.results }}"
+      vars:
+        server_name: "{{ id }}-{{ apollo_cluster }}-{{ group }}{{ master_index|default(1)|string }}"
+      loop_control:
+        loop_var: server
+      tags:
+        - create
   when:
       - group == "node"
 
