@@ -3,7 +3,7 @@
 import typer
 import os
 import subprocess
-import yaml
+import platform
 import json
 import sys
 import re
@@ -17,9 +17,27 @@ import pyperclip
 import jinja2
 import tempfile
 from loguru import logger
+import pwd
+import functools
+import platform
+import gzip
+import zlib
+import io
+import base64
 
 APP_NAME = "apollo"
-logger.debug(f"Starting {APP_NAME}")
+
+logger_config = {
+    "handlers": [
+        {
+            "sink": sys.stdout,
+            "format": "<green>{time:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{level}</lvl> - <lvl>{message}</lvl>",
+            "filter": lambda record: "spacelog" not in record["extra"]
+            and "history" not in record["extra"],
+        },
+    ],
+}
+logger.configure(**logger_config)
 
 app_dir = typer.get_app_dir(APP_NAME)
 index_file = os.path.join(app_dir, ".index.json")
@@ -27,6 +45,53 @@ index_file = os.path.join(app_dir, ".index.json")
 if not os.path.exists(app_dir):
     os.mkdir(app_dir)
     typer.echo(f"Created config directory at {app_dir}")
+
+
+@logger.catch()
+def spacelog(*, entry=False, exit=True, level="INFO"):
+    def wrapper(func):
+        name = func.__name__
+
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            running_config = arc
+            context = arc["context"]
+
+            result = func(*args, **kwargs)
+
+            extra = {
+                "spacelog": True,
+                "meta": arc["meta"],
+                "successful": False,
+                "result": None,
+            }
+
+            if result:
+                extra["successful"] = True
+                extra["result"] = result
+
+            logger_ = logger.opt(depth=1).bind(**extra)
+
+            full_command = [context["info_name"]]
+            full_command = [context["info_name"]] + sys.argv[1:]
+
+            # arc["context"]["invoked_subcommand"]
+            if exit:
+                logger_.log(level, "{}", " ".join(full_command).rstrip())
+            return result
+
+        return wrapped
+
+    return wrapper
+
+    # def wrapped(*args, **kwargs):
+    #     start = time.time()
+    #     result = func(*args, **kwargs)
+    #     end = time.time()
+    #     logger.info("Function '{}' executed in {:f} s", func.__name__, end - start)
+    #     return result
+
+    # return wrapped
 
 
 @logger.catch
@@ -77,11 +142,35 @@ arc = {
     "defaults_path": str(Path(__file__).parent / "Spacefile.yml"),
     "ansible_path": str(Path(__file__).parent / "ansible"),
     "version": read_version(str(Path(__file__).parent / "__init__.py")),
-    "cwd": os.getcwd(),
+    "meta": {
+        "user": pwd.getpwuid(os.getuid()).pw_name,
+        "cwd": os.getcwd(),
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "platform_short": platform.platform(terse=True),
+        "platform_system": platform.system(),
+        "platform_version": platform.version(),
+        "platform_release": platform.release(),
+        "platform_machine": platform.machine(),
+        "platform_processor": platform.processor(),
+        "platform_architecture": platform.architecture(),
+    },
 }
-
-
 # HELPER COMMANDS
+
+
+def hashString(string: str) -> bytes:
+    compressed_data = zlib.compress(string.encode())
+    encoded_data = base64.b64encode(compressed_data)
+
+    return encoded_data
+
+
+def unhashString(encoded_data: bytes) -> str:
+    decoded_data = base64.b64decode(encoded_data)
+    uncompressed_data = zlib.decompress(decoded_data)
+
+    return uncompressed_data.decode("utf-8")
 
 
 def normalize_name(name):
@@ -119,16 +208,18 @@ def saveSpacefile(space_config: dict = None, spacefile: str = None):
     return None
 
 
-def getSpaceNameFromIndex():
+def getSpaceName():
     if arc["index"]:
         for space in arc["index"]["spaces"]:
             if arc["index"]["spaces"][space]["spacefile"] == arc["spacefile"]:
                 return space
+
+    return normalize_name(os.path.basename(os.getcwd()))
     return None
 
 
-@app.command()
-def open():
+@app.command(name="open")
+def apollo_open():
     if "space_dir" in arc:
         if arc["space_dir"]:
             typer.launch(arc["space_dir"])
@@ -150,10 +241,14 @@ def edit():
 
 
 @app.command()
-def config(print: bool = True, rc: bool = False):
+@spacelog()
+def config(silent: bool = False, rc: bool = False):
     if rc:
-        if print:
-            typer.echo(json.dumps(arc, indent=2))
+        if not silent:
+            dump = arc
+            if dump.get("context"):
+                dump.pop("context", None)
+            typer.echo(json.dumps(dump, indent=2))
 
         return arc
     else:
@@ -193,6 +288,60 @@ def push():
     push = subprocess.run(command)
 
     return push
+
+
+@app.command(name="hash")
+def apollo_hash(data=typer.Argument(None)):
+
+    if data:
+        data = "\n".join([data])
+        hashed_data = hashString(data).decode("UTF-8")
+        print(hashed_data)
+
+        return hashed_data
+
+    if not sys.stdin.isatty():
+        line_container = []
+        lines = sys.stdin.readlines()
+
+        for line in lines:
+            if line != "":
+                line_container.append(line.rstrip("\n\n"))
+        data = "".join(line_container)
+
+        hashed_data = hashString(data).decode("UTF-8")
+
+        print(hashed_data)
+        return hashed_data
+
+    return data
+
+
+@app.command(name="unhash")
+def apollo_unhash(data: str = typer.Argument(None)):
+    if data:
+        data = "\n".join([data])
+
+        unhashed_data = unhashString(data.encode())
+        print(unhashed_data)
+
+        return unhashed_data
+
+    if not sys.stdin.isatty():
+        line_container = []
+        lines = sys.stdin.readlines()
+
+        for line in lines:
+            if line != "":
+                line_container.append(line.rstrip("\n\n"))
+        data = "".join(line_container)
+
+        unhashed_data = unhashString(data.encode())
+        print(unhashed_data)
+        return unhashed_data
+
+    return data
+    print(unhashString(data.encode()))
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -253,14 +402,19 @@ def runAnsible(custom_command, custom_vars: dict = {}, playbook_directory: str =
 
         base_command = base_command + ["-i", tmp_inventory]
 
-    # Check if we have a cluster inventory
-    cluster_inventory = os.path.join(arc["space_dir"], arc["cluster"], "inventory.yml")
+    if arc["config"]["clusters"][arc["cluster"]].get("inventory_file"):
+        inventory_file = arc["config"]["clusters"][arc["cluster"]]["inventory_file"]
 
-    if os.path.exists(cluster_inventory):
-        base_command = base_command + [
-            "-i",
-            cluster_inventory,
-        ]
+        base_command = base_command + ["-i", inventory_file]
+    else:
+        # Check if we have a cluster inventory
+        cluster_inventory = os.path.join(arc["cluster_dir"], "inventory.yml")
+
+        if os.path.exists(cluster_inventory):
+            base_command = base_command + [
+                "-i",
+                cluster_inventory,
+            ]
 
     base_command = base_command + [
         "--flush-cache",
@@ -289,7 +443,7 @@ def runAnsible(custom_command, custom_vars: dict = {}, playbook_directory: str =
 
 
 @app.command()
-def run(
+def play(
     ctx: typer.Context,
     playbook_directory: str = typer.Option(
         None,
@@ -651,6 +805,7 @@ def version_callback(value: bool):
 
 
 # Kubernetes
+@logger.catch
 def runKubectl(custom_command, custom_vars: dict = {}):
     base_command = ["kubectl"]
 
@@ -664,8 +819,13 @@ def runKubectl(custom_command, custom_vars: dict = {}):
     return result
 
 
+@logger.catch
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def k(ctx: typer.Context):
+    if arc.get("spacefile") and (not arc.get("kubeconfig") or not arc.get("cluster")):
+        logger.error("No kubeconfig available")
+        sys.exit(1)
+
     command = []
 
     if ctx.args:
@@ -675,6 +835,7 @@ def k(ctx: typer.Context):
 
 
 # Docker Compose
+@logger.catch
 def runDockerCompose(command, custom_vars: dict = {}, config=None, raw=False):
     base_command = ["docker-compose"]
 
@@ -696,6 +857,7 @@ def runDockerCompose(command, custom_vars: dict = {}, config=None, raw=False):
     return result
 
 
+@logger.catch
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     name="docker-compose",
@@ -753,6 +915,7 @@ def dc(
 
 
 # Docker
+@logger.catch
 def runDocker(command, custom_vars: dict = {}, raw=False):
     base_command = ["docker"]
 
@@ -774,6 +937,7 @@ def runDocker(command, custom_vars: dict = {}, raw=False):
     return result
 
 
+@logger.catch
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     name="docker",
@@ -788,6 +952,20 @@ def apollo_docker(
         False, "--raw", help="Don't apply augmentations, run docker direct"
     ),
 ):
+    if arc.get("spacefile") and not arc.get("cluster"):
+        logger.error("No cluster selected")
+        sys.exit(1)
+
+    if arc.get("cluster") and not arc["config"]["clusters"].get("cluster"):
+        logger.error(
+            f"Cluster '{arc['cluster']}' does not exist in space '{arc['space']}'"
+        )
+        sys.exit(1)
+
+    if arc.get("spacefile") and not arc.get("docker_host"):
+        logger.error("No docker_host selected")
+        sys.exit(1)
+
     command = []
     args = []
 
@@ -800,12 +978,8 @@ def apollo_docker(
         executed = runDocker(command=command)
 
         if executed.returncode != 0:
-            typer.secho(
-                f"docker returned exit code {executed.returncode}",
-                err=True,
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit(code=executed.returncode)
+            logger.error(f"docker returned exit code {executed.returncode}")
+            sys.exit(1)
     else:
         command = command + args
         executed = runDocker(command=command, raw=raw)
@@ -873,8 +1047,75 @@ def active(print: bool = True):
     return spacefile
 
 
+@app.command()
+@logger.catch
+def history(
+    commands_only: bool = typer.Option(False, "--commands-only", "-c"),
+    successful: bool = typer.Option(
+        False, "--successful", "-s", help="Only show successful commands"
+    ),
+):
+    if arc.get("space_logfile"):
+        # logger.add(
+        #     sys.stdout,
+        #     format="<green>{extra[log_time]:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{extra[log_level]}</lvl> - <lvl>{message}</lvl>",
+        #     filter=lambda record: "history" in record["extra"],
+        # )
+
+        with open(str(arc["space_logfile"])) as spacelog:
+            for cnt, line in enumerate(spacelog):
+                json_log = json.loads(line)
+
+                if successful:
+                    success = json_log["record"]["extra"].get("successful")
+
+                    if not success:
+                        continue
+
+                if commands_only:
+                    message = f"{json_log['record']['message']}"
+                else:
+                    message = f"{json_log['record']['time']['repr']} | {'OK' if json_log['record']['extra'].get('successful') else 'FAILED'} | {json_log['record']['extra']['meta']['user']} | {json_log['record']['extra']['meta']['cwd']} | {json_log['record']['message']}"
+
+                print(message)
+
+                # history_logger = logger.patch(
+                #     lambda record: record["extra"].update(
+                #         history=True,
+                #         log_level=json_log["record"]["level"]["name"],
+                #         log_time=json_log["record"]["time"]["timestamp"],
+                #     )
+                # )
+                # history_logger = logger.bind(
+                #     log_time=json_log["record"]["time"]["timestamp"],
+                #     log_level=json_log["record"]["level"]["name"],
+                #     history="True",
+                # )
+
+                # logger.add(
+                #     sink=sys.stdout,
+                #     format="<green>{extra[log_time]:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{extra[log_level]}</lvl> - <lvl>{message}</lvl>",
+                # )
+
+                # logger.bind(
+                #     log_time=json_log["record"]["time"]["timestamp"],
+                #     log_level=json_log["record"]["level"]["name"],
+                # )
+
+                # history_logger.log(
+                #     json_log["record"]["level"]["name"], json_log["record"]["message"]
+                # )
+
+        logger.remove()
+
+        # for line in logs:
+        #     print(line)
+        #     logger.log(line["record"]["level"]["name"], line["record"]["message"])
+
+
 @app.callback(invoke_without_command=True)
 @index_app.callback(invoke_without_command=True)
+@logger.catch
 def callback(
     ctx: typer.Context,
     verbosity: int = typer.Option(0, "--verbosity", "-v", help="Verbosity"),
@@ -934,26 +1175,19 @@ def callback(
                 arc["spacefile"] = arc["index"]["spaces"][space]["spacefile"]
                 arc["space"] = space
             else:
-                typer.secho(
-                    f"Cannot find space '{space}' in the index",
-                    err=True,
-                    fg=typer.colors.RED,
-                )
-                raise typer.Abort()
+                logger.error(f"Cannot find space '{space}' in the index")
+                sys.exit(1)
         else:
-            typer.secho(
-                f"Indexing is disabled. Set --spacefile to select a space directly",
-                err=True,
-                fg=typer.colors.RED,
+            logger.error(
+                "Indexing is disabled. Set --spacefile to select a space directly"
             )
-            raise typer.Abort()
+            sys.exit(1)
     else:
         if spacefile:
-            arc["spacefile"] = spacefile
+            arc["spacefile"] = os.path.abspath(spacefile)
 
             # Do a reverse lookup of the directory in the index to find the space name
-            if index:
-                arc["space"] = getSpaceNameFromIndex()
+            arc["space"] = getSpaceName()
 
         else:
             # No specific space or spacefile has been selected
@@ -965,10 +1199,9 @@ def callback(
             if os.path.exists(local_spacefile):
                 # If the local spacefile exists, load it
                 spacefile = local_spacefile
-                arc["spacefile"] = spacefile
+                arc["spacefile"] = os.path.abspath(spacefile)
 
-                if index:
-                    arc["space"] = getSpaceNameFromIndex()
+                arc["space"] = getSpaceName()
             else:
                 # If no local spacefile exists,
                 # 2. Fall back to active space
@@ -984,22 +1217,23 @@ def callback(
                     else:
                         # LAST RESORT
                         # If no active space can be loaded, proceed with defaults (no space)
-                        if arc["verbosity"] > 0:
-                            typer.secho(
-                                "Cannot find space config. Proceeding with local context"
-                            )
+                        logger.debug(
+                            "Cannot find space config. Proceeding with local context"
+                        )
                         pass
                 else:
-                    typer.secho(
-                        f"Indexing is disabled. Set --spacefile to select a space directly",
-                        err=True,
-                        fg=typer.colors.RED,
+                    logger.error(
+                        "Indexing is disabled. Set --spacefile to select a space directly"
                     )
                     raise typer.Abort()
         pass
 
     # Augment variables if space configuration is available
     if "spacefile" in arc and arc["spacefile"]:
+        if not os.path.isfile(arc["spacefile"]):
+            logger.error(f"Can't find Spacefile at {os.path.abspath(spacefile)}")
+            sys.exit(1)
+
         # Space config
         arc["config"] = loadSpacefile(arc["spacefile"])
 
@@ -1015,39 +1249,62 @@ def callback(
         # Cluster
         if cluster:
             arc["cluster"] = cluster
-        else:
-            arc["cluster"] = "default"
 
-        arc["apollo_cluster"] = arc["cluster"]
-        os.environ["APOLLO_CLUSTER"] = arc["cluster"]
+            arc["apollo_cluster"] = arc["cluster"]
+            os.environ["APOLLO_CLUSTER"] = arc["cluster"]
 
-        arc["cluster_dir"] = os.path.join(arc["space_dir"], arc["cluster"])
-        os.environ["APOLLO_CLUSTER_DIR"] = arc["cluster_dir"]
+            arc["cluster_dir"] = os.path.join(arc["space_dir"], arc["cluster"])
+            os.environ["APOLLO_CLUSTER_DIR"] = arc["cluster_dir"]
 
-        # Check if cluster exists
-        if arc["cluster"] in arc["config"]["clusters"]:
-            # Kubernetes
-            if "kubeconfig" in arc["config"]["clusters"][arc["cluster"]]:
-                arc["kubeconfig"] = arc["config"]["clusters"][arc["cluster"]][
-                    "kubeconfig"
-                ]
-            else:
-                cluster_kubeconfig = os.path.join(arc["cluster_dir"], "kubeconfig.yml")
-                arc["kubeconfig"] = cluster_kubeconfig
+            # Check if cluster exists in spaceconfig
+            if arc["cluster"] in arc["config"]["clusters"]:
+                # Kubernetes
+                if "kubeconfig" in arc["config"]["clusters"][arc["cluster"]]:
+                    cluster_kubeconfig = arc["config"]["clusters"][arc["cluster"]][
+                        "kubeconfig"
+                    ]
+                    logger.debug(f"kubeconfig set to {cluster_kubeconfig}")
+                    arc["kubeconfig"] = cluster_kubeconfig
+                else:
+                    # Check if file exists before populating it
+                    cluster_kubeconfig = os.path.join(
+                        arc["cluster_dir"], "kubeconfig.yml"
+                    )
 
-            # Docker
-            if "docker_host" in arc["config"]["clusters"][arc["cluster"]]:
-                arc["docker_host"] = arc["config"]["clusters"][arc["cluster"]][
-                    "docker_host"
-                ]
+                    if os.path.exists(cluster_kubeconfig):
+                        logger.debug(f"kubeconfig set to {cluster_kubeconfig}")
+                        arc["kubeconfig"] = cluster_kubeconfig
+
+                # Docker
+                if "docker_host" in arc["config"]["clusters"][arc["cluster"]]:
+                    docker_host = arc["config"]["clusters"][arc["cluster"]]["docker_host"]
+                    logger.debug(f"Set docker_host to {docker_host}")
+                    arc["docker_host"] = docker_host
 
     # Kubernetes
-    if "kubeconfig" in arc and arc["kubeconfig"]:
+    if arc.get("kubeconfig"):
         os.environ["KUBECONFIG"] = arc["kubeconfig"]
         os.environ["K8S_AUTH_KUBECONFIG"] = arc["kubeconfig"]
 
-    if "docker_host" in arc and arc["docker_host"]:
+    if arc.get("docker_host"):
         os.environ["DOCKER_HOST"] = arc["docker_host"]
+
+    # Save CLI context to art
+    arc["context"] = ctx.__dict__
+
+    # Update Logging
+    if arc.get("space_dir"):
+        arc["space_logfile"] = os.path.join(arc["space_dir"], "spacelog.json")
+
+        spacelog_sink = {
+            "sink": arc["space_logfile"],
+            "serialize": True,
+            "filter": lambda record: record["extra"].get("spacelog")
+            and record["extra"]["spacelog"],
+            "format": "{message}",
+        }
+        logger_config["handlers"].append(spacelog_sink)
+        logger.configure(**logger_config)
 
 
 if __name__ == "__main__":

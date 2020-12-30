@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 __version__ = "3.0.0"
+__app_name__ = "apollo"
 
 __author__ = "Fabian Peter <fabian@p3r.link>"
 __copyright__ = "Copyright 2020, Fabian Peter"
