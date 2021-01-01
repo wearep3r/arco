@@ -1,8 +1,0 @@
-- name: deleting cluster inventory
-  file:
-    state: absent
-    path: "{{ apollo_cluster_dir }}/inventory.yml"
-  tags:
-    - never
-    - delete
-  delegate_to: localhost

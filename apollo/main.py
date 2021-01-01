@@ -3,7 +3,6 @@
 import typer
 import os
 import subprocess
-import platform
 import json
 import sys
 import re
@@ -20,143 +19,166 @@ from loguru import logger
 import pwd
 import functools
 import platform
-import gzip
 import zlib
-import io
 import base64
+import fsutil
+from benedict import benedict
 
 APP_NAME = "apollo"
+app_dir = typer.get_app_dir(APP_NAME)
+
+
+if not os.path.exists(app_dir):
+    os.mkdir(app_dir)
+    logger.debug(f"Created config directory at {app_dir}")
+
 
 logger_config = {
     "handlers": [
         {
             "sink": sys.stdout,
             "format": "<green>{time:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{level}</lvl> - <lvl>{message}</lvl>",
-            "filter": lambda record: "spacelog" not in record["extra"]
-            and "history" not in record["extra"],
+            "filter": lambda record: "history" not in record["extra"],
+            "level": "WARNING",
         },
+        # {
+        #     "sink": os.path.join(app_dir, "history.json"),
+        #     "serialize": True,
+        #     "format": "{message}",
+        #     "filter": lambda record: record["extra"].get("history")
+        #     and record["extra"]["history"],
+        # },
     ],
 }
-logger.configure(**logger_config)
-
-app_dir = typer.get_app_dir(APP_NAME)
-index_file = os.path.join(app_dir, ".index.json")
-
-if not os.path.exists(app_dir):
-    os.mkdir(app_dir)
-    typer.echo(f"Created config directory at {app_dir}")
 
 
-@logger.catch()
-def spacelog(*, entry=False, exit=True, level="INFO"):
-    def wrapper(func):
-        name = func.__name__
+# @logger.catch()
+# def arcolog(*, entry=False, exit=True, level="INFO"):
+#     def wrapper(func):
+#         name = func.__name__
 
-        @functools.wraps(func)
-        def wrapped(*args, **kwargs):
-            running_config = arc
-            context = arc["context"]
+#         @functools.wraps(func)
+#         def wrapped(*args, **kwargs):
+#             cli_context = arc["arco"]["cli_context"]
+#             result = func(*args, **kwargs)
 
-            result = func(*args, **kwargs)
+#             extra = {
+#                 "history": True,
+#                 "runtime": arc["arco"],
+#                 "successful": False,
+#                 "result": None,
+#             }
 
-            extra = {
-                "spacelog": True,
-                "meta": arc["meta"],
-                "successful": False,
-                "result": None,
-            }
+#             if result:
+#                 extra["successful"] = True
+#                 extra["result"] = result
 
-            if result:
-                extra["successful"] = True
-                extra["result"] = result
+#             logger_ = logger.opt(depth=1).bind(**extra)
 
-            logger_ = logger.opt(depth=1).bind(**extra)
+#             full_command = [cli_context["info_name"]]
+#             full_command = [cli_context["info_name"]] + sys.argv[1:]
 
-            full_command = [context["info_name"]]
-            full_command = [context["info_name"]] + sys.argv[1:]
+#             return result
 
-            # arc["context"]["invoked_subcommand"]
-            if exit:
-                logger_.log(level, "{}", " ".join(full_command).rstrip())
-            return result
+#         return wrapped
 
-        return wrapped
-
-    return wrapper
-
-    # def wrapped(*args, **kwargs):
-    #     start = time.time()
-    #     result = func(*args, **kwargs)
-    #     end = time.time()
-    #     logger.info("Function '{}' executed in {:f} s", func.__name__, end - start)
-    #     return result
-
-    # return wrapped
+#     return wrapper
 
 
-@logger.catch
-def loadIndex():
-    # Check index exists
-    try:
-        if not os.path.isfile(index_file):
-            index = {
-                "version": 1,
-                "active": "default",
-                "spaces": {},
-            }
+# def wrapped(*args, **kwargs):
+#     start = time.time()
+#     result = func(*args, **kwargs)
+#     end = time.time()
+#     logger.info("Function '{}' executed in {:f} s", func.__name__, end - start)
+#     return result
 
-            anyconfig.dump(index, index_file, "json")
-        else:
-            index = anyconfig.load(index_file, "json")
-        return index
-    except Exception as e:
-        typer.secho(
-            f"Couldn't load index from {index_file}: {e}",
-            err=True,
-            fg=typer.colors.RED,
-        )
+# return wrapped
 
+arc = benedict(
+    {
+        "arco": {
+            "app_dir": app_dir,
+            "user": pwd.getpwuid(os.getuid()).pw_name,
+            "version": read_version(str(Path(__file__).parent / "__init__.py")),
+            "cwd": os.getcwd(),
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "platform_short": platform.platform(terse=True),
+            "platform_system": platform.system(),
+            "platform_version": platform.version(),
+            "platform_release": platform.release(),
+            "platform_machine": platform.machine(),
+            "platform_processor": platform.processor(),
+            "platform_architecture": str(platform.architecture()),
+            "verbosity": 0,
+            "context_dir": os.getcwd(),
+            "code_dir": os.getcwd(),
+        },
+        "k8s": {
+            "kubeconfig": os.path.join(os.path.expanduser("~"), ".kube", "config"),
+            "auth": {"api_key": os.path.join(os.path.expanduser("~"), ".kube", "config")},
+        },
+        "helm": {
+            "debug": False,
+        },
+        "kubeconfig": os.path.join(os.path.expanduser("~"), ".kube", "config"),
+        "better_exceptions": 1,
+        "systemd": {"colors": 1},
+        "docker": {
+            "host": "unix:///var/run/docker.sock",
+        },
+        "system_version_compat": 1,  # https://stackoverflow.com/questions/63972113/big-sur-clang-invalid-version-error-due-to-macosx-deployment-target
+        "ansible": {
+            "stdout_callback": "yaml",
+            "display_skipped_hosts": False,
+            "gathering": "smart",
+            "diff_always": True,
+            "display_args_to_stdout": True,
+            "localhost_warning": False,
+            "use_persistent_connections": True,
+            "roles_path": os.getcwd(),
+            "pipelining": True,
+            "callback_whitelist": "profile_tasks",
+            "deprecation_warnings": False,
+            "force_color": True,
+        },
+    }
+)
 
-def saveIndex(index: dict):
-    try:
-        anyconfig.dump(index, arc["index_file"], "json")
-    except Exception as e:
-        typer.secho(
-            f"Couldn't update index at {arc['index_file']}: {e}",
-            err=True,
-            fg=typer.colors.RED,
-        )
-
-    arc["index"] = index
-    return index
-
-
-app = typer.Typer(help="apollo CLI", no_args_is_help=True)
-index_app = typer.Typer()
-app.add_typer(index_app, name="index")
-
-arc = {
-    "app_dir": app_dir,
-    "index_file": index_file,
-    "index": loadIndex(),
-    "defaults_path": str(Path(__file__).parent / "Spacefile.yml"),
-    "ansible_path": str(Path(__file__).parent / "ansible"),
-    "version": read_version(str(Path(__file__).parent / "__init__.py")),
-    "meta": {
-        "user": pwd.getpwuid(os.getuid()).pw_name,
-        "cwd": os.getcwd(),
-        "hostname": platform.node(),
-        "platform": platform.platform(),
-        "platform_short": platform.platform(terse=True),
-        "platform_system": platform.system(),
-        "platform_version": platform.version(),
-        "platform_release": platform.release(),
-        "platform_machine": platform.machine(),
-        "platform_processor": platform.processor(),
-        "platform_architecture": platform.architecture(),
-    },
-}
 # HELPER COMMANDS
+
+app = typer.Typer(no_args_is_help=True)
+
+
+def dict2Environment(data, prefix=None, print=False):
+    env_dict = benedict(data, keypath_separator=".")
+
+    f = env_dict
+    f.clean(strings=True, collections=True)
+    f.standardize()
+    key_paths = f.keypaths(indexes=True)
+
+    # print(key_paths)
+
+    for path in key_paths:
+        key = path
+        value = f[path]
+
+        if isinstance(value, list):
+            continue
+
+        if isinstance(value, dict):
+            continue
+
+        # Flatten key
+        key = key.replace(".", "_").upper()
+
+        if print:
+            typer.echo(f"{key}={value}")
+        else:
+            os.environ[key] = str(value)
+
+    # env_dict.traverse(traverse_item)
 
 
 def hashString(string: str) -> bytes:
@@ -177,20 +199,27 @@ def normalize_name(name):
     return re.sub(r"[^-_a-z0-9]", "", name.lower())
 
 
-def space_list():
-    return list(arc["index"]["spaces"].keys())
+def autocomplete_code(incomplete: str):
+    # return ["Camila", "Carlos", "Sebastian"]
+    root, dirs, files = next(os.walk(arc["arco"]["app_dir"]), ([], [], []))
+
+    completion = []
+    for directory in dirs:
+        if directory.startswith(incomplete):
+            completion.append(directory)
+    return completion
 
 
-def loadSpacefile(spacefile: str = None):
-    if spacefile:
+def loadConfig(config_file: str = None):
+    if config_file:
+        # Try to assess suffix
+        extension = fsutil.get_file_extension(config_file)
+
         try:
-            space_config = anyconfig.load(spacefile, "yaml")
-            return space_config
+            arco_config = benedict(config_file, format=extension)
+            return arco_config
         except Exception as e:
-            if arc["verbosity"] > 0:
-                typer.secho(
-                    f"Could not load Spacefile: {e}", err=True, fg=typer.colors.RED
-                )
+            pass
     return None
 
 
@@ -201,20 +230,7 @@ def saveSpacefile(space_config: dict = None, spacefile: str = None):
             space_config = anyconfig.dump(space_config, spacefile, "yaml")
             return space_config
         except Exception as e:
-            if arc["verbosity"] > 0:
-                typer.secho(
-                    f"Could not save Spacefile: {e}", err=True, fg=typer.colors.RED
-                )
-    return None
-
-
-def getSpaceName():
-    if arc["index"]:
-        for space in arc["index"]["spaces"]:
-            if arc["index"]["spaces"][space]["spacefile"] == arc["spacefile"]:
-                return space
-
-    return normalize_name(os.path.basename(os.getcwd()))
+            pass
     return None
 
 
@@ -240,24 +256,78 @@ def edit():
         typer.echo("No config found")
 
 
+def arc_search(pattern: str):
+    # m = arc.match(pattern, indexes=True)
+    kp = arc.keypaths()
+
+    result = []
+    for keypath in kp:
+        if pattern in keypath:
+            result.append(keypath)
+
+    return result
+
+
 @app.command()
-@spacelog()
-def config(silent: bool = False, rc: bool = False):
-    if rc:
-        if not silent:
-            dump = arc
-            if dump.get("context"):
-                dump.pop("context", None)
-            typer.echo(json.dumps(dump, indent=2))
+def config(
+    silent: bool = False,
+    copy: bool = typer.Option(False, "--copy", "-c"),
+    render_yaml: bool = typer.Option(True, "--yaml"),
+    render_json: bool = typer.Option(False, "--json"),
+    render_env: bool = typer.Option(False, "--env"),
+    pretty: bool = typer.Option(True, "--pretty"),
+    save: bool = typer.Option(False, "--save"),
+    filter: str = typer.Option(None, "--filter", "-f", autocompletion=arc_search),
+):
+
+    config = arc
+    config["arco"]["cli_context"] = ""
+
+    if filter:
+        config = config[filter]
+
+    if print:
+        if render_json:
+            if pretty:
+
+                typer.echo(anyconfig.dumps(config, ac_parser="json", indent=2))
+            else:
+                typer.echo(anyconfig.dumps(config, "json"))
+
+        elif render_env:
+            dict2Environment(arc, print=True)
+
+        elif render_yaml:
+            typer.echo(anyconfig.dumps(config, ac_parser="yaml"))
 
         return arc
-    else:
-        if "config" in arc:
-            if print:
-                typer.echo(anyconfig.dumps(arc["config"], "yaml"))
 
-            return arc["config"]
+    if copy:
+        pyperclip.copy(anyconfig.dumps(config, "yaml"))
+        pyperclip.paste()
+
     return None
+
+
+@app.command()
+def clone(repository: str, directory: str = typer.Argument(app_dir)):
+    """
+    Clone code or context
+    """
+
+    command = ["git", "clone", repository]
+
+    logger.info(f"Cloning {repository} to {directory}")
+
+    result = subprocess.run(command, cwd=directory)
+
+    if result.returncode != 0:
+        logger.error(
+            f"Command '{' '.join(command)}' returned exit code {result.returncode}"
+        )
+        sys.exit(result.returncode)
+
+    return result
 
 
 @app.command()
@@ -344,177 +414,119 @@ def apollo_unhash(data: str = typer.Argument(None)):
     print(unhashString(data.encode()))
 
 
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def inventory(ctx: typer.Context):
-    base_command = ["ansible-inventory", "-i", arc["spacefile"]]
+# def runAnsible(custom_command, custom_vars: dict = {}, playbook_directory: str = None):
+#     os.environ["ANSIBLE_VERBOSITY"] = str(arc["verbosity"])
+#     os.environ["ANSIBLE_STDOUT_CALLBACK"] = "yaml"
+#     os.environ["ANSIBLE_DISPLAY_SKIPPED_HOSTS"] = "false"
+#     os.environ["ANSIBLE_GATHERING"] = "smart"
+#     os.environ["ANSIBLE_DIFF_ALWAYS"] = "true"
+#     os.environ["ANSIBLE_DISPLAY_ARGS_TO_STDOUT"] = "true"
+#     os.environ["ANSIBLE_LOCALHOST_WARNING"] = "false"
+#     os.environ["ANSIBLE_USE_PERSISTENT_CONNECTIONS"] = "true"
+#     os.environ["ANSIBLE_ROLES_PATH"] = playbook_directory
+#     os.environ["ANSIBLE_PIPELINING"] = "true"
+#     os.environ["ANSIBLE_CALLBACK_WHITELIST"] = "profile_tasks"
+#     os.environ["ANSIBLE_DEPRECATION_WARNINGS"] = "false"
 
-    cluster_inventory = os.path.join(arc["space_dir"], arc["cluster"], "inventory.yml")
+#     if not arc["verbosity"] > 0:
+#         os.environ["ANSIBLE_DEPRECATION_WARNINGS"] = "false"
 
-    if os.path.exists(cluster_inventory):
-        base_command = base_command + [
-            "-i",
-            cluster_inventory,
-        ]
+#     base_vars = arc
 
-    run_command = base_command + ctx.args
+#     if custom_vars:
+#         base_vars = base_vars + custom_vars
 
-    if arc["verbosity"] > 0:
-        typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
+#     base_command = ["ansible-playbook"]
 
-    result = subprocess.run(run_command, cwd=arc["ansible_path"])
+#     # Create tempfile with inventory from config
+#     # arc["clusters"][cluster]["inventory"]
+#     if "inventory" in arc["config"]["clusters"][arc["cluster"]]:
+#         inventory = arc["config"]["clusters"][arc["cluster"]]["inventory"]
 
-    return result
+#         if inventory:
+#             # Create tempfile
+#             tmp_inventory = tempfile.TemporaryFile()
+#             anyconfig.dump(inventory, tmp_inventory)
 
+#         base_command = base_command + ["-i", tmp_inventory]
 
-def runAnsible(custom_command, custom_vars: dict = {}, playbook_directory: str = None):
-    os.environ["ANSIBLE_VERBOSITY"] = str(arc["verbosity"])
-    os.environ["ANSIBLE_STDOUT_CALLBACK"] = "yaml"
-    os.environ["ANSIBLE_DISPLAY_SKIPPED_HOSTS"] = "false"
-    os.environ["ANSIBLE_GATHERING"] = "smart"
-    os.environ["ANSIBLE_DIFF_ALWAYS"] = "true"
-    os.environ["ANSIBLE_DISPLAY_ARGS_TO_STDOUT"] = "true"
-    os.environ["ANSIBLE_LOCALHOST_WARNING"] = "false"
-    os.environ["ANSIBLE_USE_PERSISTENT_CONNECTIONS"] = "true"
-    os.environ["ANSIBLE_ROLES_PATH"] = playbook_directory
-    os.environ["ANSIBLE_PIPELINING"] = "true"
-    os.environ["ANSIBLE_CALLBACK_WHITELIST"] = "profile_tasks"
-    os.environ["ANSIBLE_DEPRECATION_WARNINGS"] = "false"
+#     if arc["config"]["clusters"][arc["cluster"]].get("inventory_file"):
+#         inventory_file = arc["config"]["clusters"][arc["cluster"]]["inventory_file"]
 
-    if not arc["verbosity"] > 0:
-        os.environ["ANSIBLE_DEPRECATION_WARNINGS"] = "false"
+#         base_command = base_command + ["-i", inventory_file]
+#     else:
+#         # Check if we have a cluster inventory
+#         cluster_inventory = os.path.join(arc["cluster_dir"], "inventory.yml")
 
-    base_vars = arc
+#         if os.path.exists(cluster_inventory):
+#             base_command = base_command + [
+#                 "-i",
+#                 cluster_inventory,
+#             ]
 
-    if custom_vars:
-        base_vars = base_vars + custom_vars
+#     base_command = base_command + [
+#         "--flush-cache",
+#         "--extra-vars",
+#         f"{json.dumps(base_vars)}",
+#     ]
 
-    base_command = ["ansible-playbook"]
+#     run_command = base_command + custom_command
 
-    # Create tempfile with inventory from config
-    # arc["clusters"][cluster]["inventory"]
-    if "inventory" in arc["config"]["clusters"][arc["cluster"]]:
-        inventory = arc["config"]["clusters"][arc["cluster"]]["inventory"]
+#     if arc["dry"]:
+#         typer.secho(f"Running in check mode", fg=typer.colors.BRIGHT_BLACK)
+#         run_command.append("--check")
 
-        if inventory:
-            # Create tempfile
-            tmp_inventory = tempfile.TemporaryFile()
-            anyconfig.dump(inventory, tmp_inventory)
+#     if arc["verbosity"] > 0:
+#         typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
+#         typer.secho(
+#             f"playbook_directory: {playbook_directory}",
+#             fg=typer.colors.BRIGHT_BLACK,
+#         )
+#         typer.secho(f"custom_command: {custom_command}", fg=typer.colors.BRIGHT_BLACK)
+#         typer.secho(f"custom_vars: {custom_vars}", fg=typer.colors.BRIGHT_BLACK)
 
-        base_command = base_command + ["-i", tmp_inventory]
+#     result = subprocess.run(run_command, cwd=playbook_directory)
 
-    if arc["config"]["clusters"][arc["cluster"]].get("inventory_file"):
-        inventory_file = arc["config"]["clusters"][arc["cluster"]]["inventory_file"]
-
-        base_command = base_command + ["-i", inventory_file]
-    else:
-        # Check if we have a cluster inventory
-        cluster_inventory = os.path.join(arc["cluster_dir"], "inventory.yml")
-
-        if os.path.exists(cluster_inventory):
-            base_command = base_command + [
-                "-i",
-                cluster_inventory,
-            ]
-
-    base_command = base_command + [
-        "--flush-cache",
-        "--extra-vars",
-        f"{json.dumps(base_vars)}",
-    ]
-
-    run_command = base_command + custom_command
-
-    if arc["dry"]:
-        typer.secho(f"Running in check mode", fg=typer.colors.BRIGHT_BLACK)
-        run_command.append("--check")
-
-    if arc["verbosity"] > 0:
-        typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-        typer.secho(
-            f"playbook_directory: {playbook_directory}",
-            fg=typer.colors.BRIGHT_BLACK,
-        )
-        typer.secho(f"custom_command: {custom_command}", fg=typer.colors.BRIGHT_BLACK)
-        typer.secho(f"custom_vars: {custom_vars}", fg=typer.colors.BRIGHT_BLACK)
-
-    result = subprocess.run(run_command, cwd=playbook_directory)
-
-    return result
+#     return result
 
 
-@app.command()
-def play(
-    ctx: typer.Context,
-    playbook_directory: str = typer.Option(
-        None,
-        "--playbook-directory",
-        help="Run Ansible in the context of the current PWD instead of the space directory",
-    ),
-    vars: str = typer.Option(
-        None,
-        "--vars",
-        help="additional variables to feed to ansible (accepts JSON dicts)",
-    ),
-    playbook: str = typer.Argument(...),
-):
-    """
-    Run Ansible playbooks against a cluster
-    """
-
-    # Fail if we don't have a cluster to target
-    if "spacefile" not in arc:
-        typer.secho(
-            f"No space selected. Set --space to select a space",
-            err=True,
-            fg=typer.colors.RED,
-        )
-        raise typer.Abort()
-    if "cluster" not in arc:
-        typer.secho(
-            f"No cluster selected. Set --cluster to select a cluster",
-            err=True,
-            fg=typer.colors.RED,
-        )
-        raise typer.Abort()
-
-    command = [
-        playbook,
-    ]
-
-    custom_vars = {}
-
-    if ctx.args:
-        command = command + ctx.args
-
-    # Execute playbook
-    if not playbook_directory:
-        playbook_directory = arc["space_dir"]
-
-    result = runAnsible(command, custom_vars, playbook_directory)
-
-    if result.returncode == 0:
-        typer.secho(f"Run successful", err=False, fg=typer.colors.GREEN)
-        return result
-    else:
-        typer.secho(f"Run failed", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=result.returncode)
-
-
-@app.command()
-def copy():
-    kubeconfig = anyconfig.load(arc["kubeconfig"], "yaml")
-    pyperclip.copy(anyconfig.dumps(kubeconfig, "yaml"))
-    pyperclip.paste()
-
-
-# @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-# def install(ctx: typer.Context):
+# @app.command()
+# def play(
+#     ctx: typer.Context,
+#     playbook_directory: str = typer.Option(
+#         None,
+#         "--playbook-directory",
+#         help="Run Ansible in the context of the current PWD instead of the space directory",
+#     ),
+#     vars: str = typer.Option(
+#         None,
+#         "--vars",
+#         help="additional variables to feed to ansible (accepts JSON dicts)",
+#     ),
+#     playbook: str = typer.Argument(...),
+# ):
 #     """
-#     Deploy apollo
+#     Run Ansible playbooks against a cluster
 #     """
+
+#     # Fail if we don't have a cluster to target
+#     if "spacefile" not in arc:
+#         typer.secho(
+#             f"No space selected. Set --space to select a space",
+#             err=True,
+#             fg=typer.colors.RED,
+#         )
+#         raise typer.Abort()
+#     if "cluster" not in arc:
+#         typer.secho(
+#             f"No cluster selected. Set --cluster to select a cluster",
+#             err=True,
+#             fg=typer.colors.RED,
+#         )
+#         raise typer.Abort()
 
 #     command = [
-#         "install.yml",
+#         playbook,
 #     ]
 
 #     custom_vars = {}
@@ -522,193 +534,234 @@ def copy():
 #     if ctx.args:
 #         command = command + ctx.args
 
-#     if arc["verbosity"] > 0:
-#         typer.secho(f"{command}", fg=typer.colors.BRIGHT_BLACK)
+#     # Execute playbook
+#     if not playbook_directory:
+#         playbook_directory = arc["space_dir"]
 
-#     result = runPlay(command, custom_vars)
+#     result = runAnsible(command, custom_vars, playbook_directory)
 
 #     if result.returncode == 0:
-#         typer.secho(f"Deployment successful", err=False, fg=typer.colors.GREEN)
+#         typer.secho(f"Run successful", err=False, fg=typer.colors.GREEN)
 #         return result
 #     else:
-#         typer.secho(f"Deployment failed", err=True, fg=typer.colors.RED)
+#         typer.secho(f"Run failed", err=True, fg=typer.colors.RED)
 #         raise typer.Exit(code=result.returncode)
 
+# # Kubernetes
+# @logger.catch
+# def runKubectl(custom_command, custom_vars: dict = {}):
+#     base_command = ["kubectl"]
 
-@app.command(name="add-space")
-def add_space(
-    name: str = typer.Option(
-        normalize_name(os.path.basename(os.getcwd())),
-        "--name",
-        "-n",
-        help="a human readable name for your space",
-    ),
-    directory: str = typer.Option(
-        os.getcwd(),
-        "--directory",
-        "-d",
-        help="a directory to store your space in",
-    ),
-    silent: bool = typer.Option(False, "--silent", "-s", help="don't be so talky"),
-):
+#     run_command = base_command + custom_command
 
-    directory = os.path.abspath(directory)
+#     if arc["verbosity"] > 0:
+#         typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
 
-    # Assemble Spacefile.yml
-    config = {"clusters": {"default": {}}}
-    spacefile = os.path.join(directory, "Spacefile.yml")
+#     result = subprocess.run(run_command)
 
-    try:
-        anyconfig.dump(config, spacefile)
-
-        if not silent:
-            message = typer.style("Spacefile saved to ", fg=typer.colors.WHITE)
-            message = message + typer.style(f"{directory}", fg=typer.colors.GREEN)
-            typer.echo(message)
-    except Exception as e:
-        typer.secho(f"Could not save Spacefile: {e}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-
-    # Setup index
-    index = arc["index"]
-    index["spaces"][name] = {"spacefile": spacefile}
-
-    updated_index = saveIndex(index)
+#     return result
 
 
-@app.command(name="delete-space")
-def delete_space(
-    silent: bool = typer.Option(False, "--silent", "-s", help="don't be so talky"),
-):
+# @logger.catch
+# @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+# def k(ctx: typer.Context):
+#     if arc.get("spacefile") and (not arc.get("kubeconfig") or not arc.get("cluster")):
+#         logger.error("No kubeconfig available")
+#         sys.exit(1)
 
-    if "space" in arc:
-        #  Setup index
-        index = arc["index"]
-        del index["spaces"][arc["space"]]
+#     command = []
 
-        updated_index = saveIndex(index)
+#     if ctx.args:
+#         command = command + ctx.args
 
-        if not silent:
-            message = typer.style("Deleted space ", fg=typer.colors.WHITE)
-            message = message + typer.style(f"{arc['space']}", fg=typer.colors.GREEN)
-            typer.echo(message)
-            typer.secho(
-                f"Run 'rm -rf {arc['cwd']}' to clean up",
-                fg=typer.colors.WHITE,
-            )
-    else:
-        typer.echo("No space selected")
+#     runKubectl(command)
 
 
-@app.command(name="add-cluster")
-def add_cluster(
-    name: str = typer.Option(
-        normalize_name(os.path.basename(os.getcwd())),
-        "--name",
-        "-n",
-        help="a human readable name for your space",
-    ),
-    kubeconfig: str = typer.Option(
-        None, "--kubeconfig", help="path to the cluster's kubeconfig"
-    ),
-    docker_host: str = typer.Option(
-        None, "--docker-host", help="the cluster's docker host"
-    ),
-    silent: bool = typer.Option(False, "--silent", "-s", help="don't be so talky"),
-):
+# # Docker Compose
+# @logger.catch
+# def runDockerCompose(command, custom_vars: dict = {}, config=None, raw=False):
+#     base_command = ["docker-compose"]
 
-    # Check if we have a spacefile
-    if "spacefile" in arc and arc["spacefile"]:
-        # Check if config has been loaded
-        if "config" in arc:
-            space_config = arc["config"]
+#     if not raw:
+#         run_command = base_command + ["-f", "-"] + command
 
-            space_config["clusters"][name] = {}
-            cluster_config = space_config["clusters"][name]
+#         if arc["verbosity"] > 0:
+#             typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
 
-            if kubeconfig:
-                cluster_config["kubeconfig"] = kubeconfig
+#         result = subprocess.run(run_command, text=True, input=config)
+#     else:
+#         run_command = base_command + command
 
-            if docker_host:
-                cluster_config["docker_host"] = docker_host
+#         if arc["verbosity"] > 0:
+#             typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
 
-            updated_config = saveSpacefile(space_config, arc["spacefile"])
+#         result = subprocess.run(run_command)
 
-            return updated_config
-        else:
-            if not silent:
-                typer.secho("No config found")
-    else:
-        if not silent:
-            typer.secho("Cannot add cluster: no Spacefile found")
-
-    sys.exit(1)
+#     return result
 
 
-# @app.command()
-# def init(force: bool = typer.Option(False, "--force", "-f")):
-#     """
-#     Initialize space configuration
-#     """
+# @logger.catch
+# @app.command(
+#     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+#     name="docker-compose",
+# )
+# @app.command(
+#     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+#     name="dc",
+# )
+# def dc(
+#     ctx: typer.Context,
+#     raw: bool = typer.Option(
+#         False, "--raw", help="Don't apply augmentations, run docker-compose direct"
+#     ),
+# ):
+#     command = []
+#     args = []
 
-#     # typer.secho("Initializing apollo config", bold=True, fg=typer.colors.BRIGHT_BLACK)
+#     if ctx.args:
+#         args = args + ctx.args
 
-#     # Check if config already exists
-#     if os.path.exists(arc["spacefile"]):
-#         if not force:
-#             message = typer.style(
-#                 "Config already exists. ",
-#                 bold=True,
+#     # If --raw, just run the command
+#     if not raw:
+#         # Cleanup args, remove "-f" flags if not running in raw mode
+
+#         for arg in reversed(args):
+#             if arg == "-f":
+
+#                 # Get next arg
+#                 this_arg = args.index(arg)
+#                 next_arg = args.index(arg) + 1
+
+#                 # Remove next arg
+#                 del args[next_arg]
+#                 del args[this_arg]
+
+#         # Load jinja-templated docker-compose.yml
+#         with open("docker-compose.yml") as file_:
+#             template = jinja2.Template(file_.read())
+#         rendered = template.render(arc)
+
+#         command = command + args
+
+#         executed = runDockerCompose(command=command, config=rendered)
+
+#         if executed.returncode != 0:
+#             typer.secho(
+#                 f"docker-compose returned exit code {executed.returncode}",
+#                 err=True,
 #                 fg=typer.colors.RED,
 #             )
-#             message += typer.style(
-#                 "Run '!! -f' (or 'apollo init --force') to overwrite it.",
-#                 bold=False,
-#                 fg=typer.colors.WHITE,
+#             raise typer.Exit(code=executed.returncode)
+#     else:
+#         command = command + args
+#         runDockerCompose(command=command, raw=raw)
+
+
+# # Docker
+# @logger.catch
+# def runDocker(command, custom_vars: dict = {}, raw=False):
+#     base_command = ["docker"]
+
+#     if not raw:
+#         run_command = base_command + command
+
+#         if arc["verbosity"] > 0:
+#             typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
+
+#         result = subprocess.run(run_command)
+#     else:
+#         run_command = base_command + command
+
+#         if arc["verbosity"] > 0:
+#             typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
+
+#         result = subprocess.run(run_command)
+
+#     return result
+
+# @logger.catch
+# @app.command(
+#     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+#     name="docker",
+# )
+# @app.command(
+#     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+#     name="d",
+# )
+# def apollo_docker(
+#     ctx: typer.Context,
+#     raw: bool = typer.Option(
+#         False, "--raw", help="Don't apply augmentations, run docker direct"
+#     ),
+# ):
+#     if arc.get("spacefile") and not arc.get("cluster"):
+#         logger.error("No cluster selected")
+#         sys.exit(1)
+
+#     if arc.get("cluster") and not arc["config"]["clusters"].get("cluster"):
+#         logger.error(
+#             f"Cluster '{arc['cluster']}' does not exist in space '{arc['space']}'"
+#         )
+#         sys.exit(1)
+
+#     if arc.get("spacefile") and not arc.get("docker_host"):
+#         logger.error("No docker_host selected")
+#         sys.exit(1)
+
+#     command = []
+#     args = []
+
+#     if ctx.args:
+#         args = args + ctx.args
+
+#     # If --raw, just run the command
+#     if not raw:
+#         command = command + args
+#         executed = runDocker(command=command)
+
+#         if executed.returncode != 0:
+#             logger.error(f"docker returned exit code {executed.returncode}")
+#             sys.exit(1)
+#     else:
+#         command = command + args
+#         executed = runDocker(command=command, raw=raw)
+
+#         if executed.returncode != 0:
+#             typer.secho(
+#                 f"docker returned exit code {executed.returncode}",
+#                 err=True,
+#                 fg=typer.colors.RED,
 #             )
-#             typer.echo(message)
-#             raise typer.Exit(code=1)
+#             raise typer.Exit(code=executed.returncode)
 
-#     defaults = anyconfig.load(arc["defaults_path"])
 
-#     # with open(arc["defaults_path"], "r") as file:
-#     #     defaults = yaml.load(file, Loader=yaml.FullLoader)
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+@logger.catch
+def run(ctx: typer.Context, command: str = typer.Argument(...)):
+    args = []
 
-#     # name
-#     if defaults["all"]["id"] == "default":
-#         # Generate random name
-#         cluster_name = namesgenerator.get_random_name(sep="-")
+    if ctx.args:
+        args = args + ctx.args
 
-#         # Prompt for
-#         space_id = typer.prompt("Set a cluster id", default=cluster_name)
+    if command in ["ansible-playbook", "ap", "ak"]:
+        pass
 
-#         # Check if a cluster with this index already exists
-#         if space_id in arc["index"]["spaces"]:
-#             # Cluster exists
-#             overwrite = typer.prompt(
-#                 "A cluster with that id already exists. Overwrite?",
-#                 abort=True,
-#             )
-#             typer.secho("Overwriting cluster index for {space_id}", fg=typer.colors.WHITE)
-#         defaults["all"]["id"] = space_id
+    if command in ["docker"]:
+        pass
 
-#     # Save Spacefile.yml
-#     try:
-#         anyconfig.dump(defaults, arc["spacefile"])
+    command = [command] + args
 
-#         message = typer.style("Config saved to ", fg=typer.colors.WHITE)
-#         message = message + typer.style(f"{arc['inventory']}", fg=typer.colors.GREEN)
-#         typer.echo(message)
-#     except Exception as e:
-#         typer.secho(f"Could not save config: {e}", err=True, fg=typer.colors.RED)
-#         raise typer.Exit(code=1)
+    result = subprocess.run(
+        command, cwd=arc["arco"]["code_dir"], universal_newlines=True, shell=False
+    )
 
-#     # Update index
-#     index = arc["index"]
-
-#     index["spaces"][space_id] = {"spacefile": arc["spacefile"]}
-
-#     updated_index = saveIndex(index)
+    if result.returncode != 0:
+        logger.error(
+            f"Command '{' '.join(command)}' returned exit code {result.returncode}"
+        )
+        sys.exit(result.returncode)
 
 
 def version_callback(value: bool):
@@ -718,593 +771,169 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
-# @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-# def create(
-#     ctx: typer.Context,
-# ):
-#     if arc["cluster"] in arc["config"]:
-#         # Check if inventory exists
-#         cluster_inventory = os.path.join(
-#             arc["space_dir"], arc["cluster"], "inventory.yml"
-#         )
-#         if os.path.exists(cluster_inventory):
-#             inventory = anyconfig.load(cluster_inventory)
-
-#             if len(inventory[arc["cluster"]]) > 0:
-#                 typer.secho(
-#                     f"Cluster already created. Run 'apollo -s {arc['space_id']} -c {arc['cluster']} inventory' for more information",
-#                     fg=typer.colors.GREEN,
-#                 )
-#                 raise typer.Exit()
-
-#     command = [
-#         "--tags",
-#         "create",
-#         "create.yml",
-#     ]
-
-#     if ctx.args:
-#         command = command + ctx.args
-
-#     result = runPlay(command)
-
-#     if result.returncode == 0:
-#         typer.secho(f"Cluster created.", err=False, fg=typer.colors.GREEN)
-#         return result
-#     else:
-#         typer.secho(f"Cluster creation failed.", err=True, fg=typer.colors.RED)
-#         raise typer.Exit(code=result.returncode)
-
-#     # Managers
-#     # 1. Check if "nodes" list is empty
-#     # 2. if so, fall back on group spec
-
-#     raise typer.Exit()
-
-
-# @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-# def delete(
-#     ctx: typer.Context,
-#     list_tasks: bool = typer.Option(
-#         False, "--list-tasks", "-d", help="List Tasks, do not execute"
-#     ),
-#     list_tags: bool = typer.Option(
-#         False, "--list-tags", "-d", help="List Tags, do not execute"
-#     ),
-# ):
-
-#     command = [
-#         "--tags",
-#         "delete",
-#         "delete.yml",
-#     ]
-
-#     if list_tasks:
-#         command.append("--list-tasks")
-
-#     if list_tags:
-#         command.append("--list-tags")
-
-#     if ctx.args:
-#         command = command + ctx.args
-
-#     result = runPlay(command)
-
-#     if result.returncode == 0:
-#         typer.secho(f"Cluster deleted.", err=False, fg=typer.colors.GREEN)
-#         return result
-#     else:
-#         typer.secho(f"Cluster deletion failed.", err=True, fg=typer.colors.RED)
-#         raise typer.Exit(code=result.returncode)
-
-#     # Managers
-#     # 1. Check if "nodes" list is empty
-#     # 2. if so, fall back on group spec
-
-#     raise typer.Exit()
-
-
-# Kubernetes
-@logger.catch
-def runKubectl(custom_command, custom_vars: dict = {}):
-    base_command = ["kubectl"]
-
-    run_command = base_command + custom_command
-
-    if arc["verbosity"] > 0:
-        typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-
-    result = subprocess.run(run_command)
-
-    return result
-
-
-@logger.catch
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def k(ctx: typer.Context):
-    if arc.get("spacefile") and (not arc.get("kubeconfig") or not arc.get("cluster")):
-        logger.error("No kubeconfig available")
-        sys.exit(1)
-
-    command = []
-
-    if ctx.args:
-        command = command + ctx.args
-
-    runKubectl(command)
-
-
-# Docker Compose
-@logger.catch
-def runDockerCompose(command, custom_vars: dict = {}, config=None, raw=False):
-    base_command = ["docker-compose"]
-
-    if not raw:
-        run_command = base_command + ["-f", "-"] + command
-
-        if arc["verbosity"] > 0:
-            typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-
-        result = subprocess.run(run_command, text=True, input=config)
-    else:
-        run_command = base_command + command
-
-        if arc["verbosity"] > 0:
-            typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-
-        result = subprocess.run(run_command)
-
-    return result
-
-
-@logger.catch
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    name="docker-compose",
+@app.callback(
+    invoke_without_command=True,
 )
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    name="dc",
-)
-def dc(
-    ctx: typer.Context,
-    raw: bool = typer.Option(
-        False, "--raw", help="Don't apply augmentations, run docker-compose direct"
-    ),
-):
-    command = []
-    args = []
-
-    if ctx.args:
-        args = args + ctx.args
-
-    # If --raw, just run the command
-    if not raw:
-        # Cleanup args, remove "-f" flags if not running in raw mode
-
-        for arg in reversed(args):
-            if arg == "-f":
-
-                # Get next arg
-                this_arg = args.index(arg)
-                next_arg = args.index(arg) + 1
-
-                # Remove next arg
-                del args[next_arg]
-                del args[this_arg]
-
-        # Load jinja-templated docker-compose.yml
-        with open("docker-compose.yml") as file_:
-            template = jinja2.Template(file_.read())
-        rendered = template.render(arc)
-
-        command = command + args
-
-        executed = runDockerCompose(command=command, config=rendered)
-
-        if executed.returncode != 0:
-            typer.secho(
-                f"docker-compose returned exit code {executed.returncode}",
-                err=True,
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit(code=executed.returncode)
-    else:
-        command = command + args
-        runDockerCompose(command=command, raw=raw)
-
-
-# Docker
-@logger.catch
-def runDocker(command, custom_vars: dict = {}, raw=False):
-    base_command = ["docker"]
-
-    if not raw:
-        run_command = base_command + command
-
-        if arc["verbosity"] > 0:
-            typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-
-        result = subprocess.run(run_command)
-    else:
-        run_command = base_command + command
-
-        if arc["verbosity"] > 0:
-            typer.secho(f"{run_command}", fg=typer.colors.BRIGHT_BLACK)
-
-        result = subprocess.run(run_command)
-
-    return result
-
-
-@logger.catch
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    name="docker",
-)
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    name="d",
-)
-def apollo_docker(
-    ctx: typer.Context,
-    raw: bool = typer.Option(
-        False, "--raw", help="Don't apply augmentations, run docker direct"
-    ),
-):
-    if arc.get("spacefile") and not arc.get("cluster"):
-        logger.error("No cluster selected")
-        sys.exit(1)
-
-    if arc.get("cluster") and not arc["config"]["clusters"].get("cluster"):
-        logger.error(
-            f"Cluster '{arc['cluster']}' does not exist in space '{arc['space']}'"
-        )
-        sys.exit(1)
-
-    if arc.get("spacefile") and not arc.get("docker_host"):
-        logger.error("No docker_host selected")
-        sys.exit(1)
-
-    command = []
-    args = []
-
-    if ctx.args:
-        args = args + ctx.args
-
-    # If --raw, just run the command
-    if not raw:
-        command = command + args
-        executed = runDocker(command=command)
-
-        if executed.returncode != 0:
-            logger.error(f"docker returned exit code {executed.returncode}")
-            sys.exit(1)
-    else:
-        command = command + args
-        executed = runDocker(command=command, raw=raw)
-
-        if executed.returncode != 0:
-            typer.secho(
-                f"docker returned exit code {executed.returncode}",
-                err=True,
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit(code=executed.returncode)
-
-
-@index_app.command("show")
-def index_show(item: str = "all"):
-    typer.echo(json.dumps(arc["index"], indent=4))
-
-
-@index_app.command("list")
-def index_list(item: str = "all", print: bool = True):
-    for space in arc["index"]["spaces"]:
-        if space == item or item == "all":
-            message = typer.style(f"{space}", fg=typer.colors.WHITE)
-            message = message + " "
-            message = message + typer.style(
-                f"{arc['index']['spaces'][space]['spacefile']}", fg=typer.colors.GREEN
-            )
-            typer.echo(message)
-
-    # typer.echo(json.dumps(arc["index"], indent=4))
-
-
-@app.command()
-def activate():
-    index = arc["index"]
-    index["active"] = arc["space_id"]
-
-    updated_index = saveIndex(index)
-
-    return updated_index
-
-
-@app.command()
-def deactivate():
-    index = arc["index"]
-    index["active"] = None
-
-    updated_index = saveIndex(index)
-
-    return updated_index
-
-
-@app.command()
-def active(print: bool = True):
-    active_space = arc["index"]["active"]
-
-    if active_space:
-        spacefile = arc["index"]["spaces"][active_space]["spacefile"]
-    else:
-        spacefile = None
-
-    if print:
-        typer.echo(f"{active_space}: {spacefile}")
-
-    return spacefile
-
-
-@app.command()
-@logger.catch
-def history(
-    commands_only: bool = typer.Option(False, "--commands-only", "-c"),
-    successful: bool = typer.Option(
-        False, "--successful", "-s", help="Only show successful commands"
-    ),
-):
-    if arc.get("space_logfile"):
-        # logger.add(
-        #     sys.stdout,
-        #     format="<green>{extra[log_time]:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{extra[log_level]}</lvl> - <lvl>{message}</lvl>",
-        #     filter=lambda record: "history" in record["extra"],
-        # )
-
-        with open(str(arc["space_logfile"])) as spacelog:
-            for cnt, line in enumerate(spacelog):
-                json_log = json.loads(line)
-
-                if successful:
-                    success = json_log["record"]["extra"].get("successful")
-
-                    if not success:
-                        continue
-
-                if commands_only:
-                    message = f"{json_log['record']['message']}"
-                else:
-                    message = f"{json_log['record']['time']['repr']} | {'OK' if json_log['record']['extra'].get('successful') else 'FAILED'} | {json_log['record']['extra']['meta']['user']} | {json_log['record']['extra']['meta']['cwd']} | {json_log['record']['message']}"
-
-                print(message)
-
-                # history_logger = logger.patch(
-                #     lambda record: record["extra"].update(
-                #         history=True,
-                #         log_level=json_log["record"]["level"]["name"],
-                #         log_time=json_log["record"]["time"]["timestamp"],
-                #     )
-                # )
-                # history_logger = logger.bind(
-                #     log_time=json_log["record"]["time"]["timestamp"],
-                #     log_level=json_log["record"]["level"]["name"],
-                #     history="True",
-                # )
-
-                # logger.add(
-                #     sink=sys.stdout,
-                #     format="<green>{extra[log_time]:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{extra[log_level]}</lvl> - <lvl>{message}</lvl>",
-                # )
-
-                # logger.bind(
-                #     log_time=json_log["record"]["time"]["timestamp"],
-                #     log_level=json_log["record"]["level"]["name"],
-                # )
-
-                # history_logger.log(
-                #     json_log["record"]["level"]["name"], json_log["record"]["message"]
-                # )
-
-        logger.remove()
-
-        # for line in logs:
-        #     print(line)
-        #     logger.log(line["record"]["level"]["name"], line["record"]["message"])
-
-
-@app.callback(invoke_without_command=True)
-@index_app.callback(invoke_without_command=True)
-@logger.catch
+# @logger.catch
 def callback(
     ctx: typer.Context,
-    verbosity: int = typer.Option(0, "--verbosity", "-v", help="Verbosity"),
-    spacefile: str = typer.Option(
+    context: str = typer.Option(
         None,
-        "--spacefile",
-        help="The location of the Spacefile",
-        envvar=["APOLLO_SPACEFILE"],
+        "--context",
+        help="The context to load",
+        envvar=["ARCO_CONTEXT"],
     ),
-    space: str = typer.Option(
+    code: str = typer.Option(
         None,
-        "--space",
-        "-s",
-        help="The space to manage",
-        envvar=["APOLLO_SPACE"],
-        autocompletion=space_list,
-    ),
-    cluster: str = typer.Option(
-        None,
-        "--cluster",
-        "-c",
-        help="The cluster to manage",
-        envvar=["APOLLO_CLUSTER"],
+        "--code",
+        help="The code to load",
+        envvar=["ARCO_CODE"],
+        autocompletion=autocomplete_code,
     ),
     env_file: str = typer.Option(
-        os.path.join(os.environ.get("PWD"), ".env"),
+        os.path.join(os.getcwd(), ".env"),
         "--env-file",
         "-e",
         help="A file containing environment variables to be used during command execution",
-        envvar=["APOLLO_ENV_FILE"],
+        envvar=["ARCO_ENV_FILE"],
     ),
-    index: bool = typer.Option(True, "--index", help="Enable or disable indexing"),
-    force: bool = typer.Option(False, "--force", help="Enable Development Mode"),
-    dry: bool = typer.Option(False, "--dry", help="Enable dry run"),
+    loglevel: str = typer.Option("WARNING", "--loglevel", help="Loglevel"),
+    name: str = typer.Option(
+        normalize_name(os.path.basename(os.getcwd())),
+        "--name",
+        "-n",
+        help="an optional name for the context you're running in",
+        envvar=["ARCO_CONTEXT_NAME"],
+    ),
+    var: Optional[List[str]] = typer.Option(
+        None,
+        "--var",
+        help="Add additional vars at runtime; you can use paths like '--var context.key=value' to nest values",
+        autocompletion=arc_search,
+    ),
     version: Optional[bool] = typer.Option(
         None, "--version", callback=version_callback, is_eager=True
     ),
 ):
     # Load from .env
-    load_dotenv(dotenv_path=env_file)
+    # load_dotenv(dotenv_path=env_file)
 
-    # Space-independent values
-    arc["verbosity"] = verbosity
-    arc["force"] = force
-    arc["dev"] = force
-    arc["dry"] = dry
-    os.environ["APOLLO_FORCE"] = str(arc["force"])
-    os.environ["APOLLO_CONFIG_VERSION"] = "3"
-    os.environ["APOLLO_VERSION"] = arc["version"]
+    # conf = arc
+    global arc
 
-    # --space > --spacefile
-    if space:
-        if index:
-            # Try to load config from index
-            if space in arc["index"]["spaces"]:
-                # Found that space in the index
-                arc["spacefile"] = arc["index"]["spaces"][space]["spacefile"]
-                arc["space"] = space
-            else:
-                logger.error(f"Cannot find space '{space}' in the index")
-                sys.exit(1)
-        else:
-            logger.error(
-                "Indexing is disabled. Set --spacefile to select a space directly"
-            )
-            sys.exit(1)
-    else:
-        if spacefile:
-            arc["spacefile"] = os.path.abspath(spacefile)
+    if name:
+        arc["arco"]["name"] = name
 
-            # Do a reverse lookup of the directory in the index to find the space name
-            arc["space"] = getSpaceName()
+    if loglevel:
+        arc["arco"]["loglevel"] = loglevel.upper()
+        logger.add(sys.stdout, level=loglevel.upper())
 
-        else:
-            # No specific space or spacefile has been selected
-            # 1. Fall back to local Spacefile
+    if code:
+        # Try to find code_dir locally
+        code_dir = os.path.join(os.getcwd(), code)
+        code_found = False
 
-            # Check if there's a Spacefile.yml in the current directory
-            local_spacefile = os.path.join(os.getcwd(), "Spacefile.yml")
+        if os.path.isdir(code_dir):
+            logger.debug(f"Found code_dir in {code_dir}")
+            arc["arco"]["code_dir"] = code_dir
+            code_found = True
 
-            if os.path.exists(local_spacefile):
-                # If the local spacefile exists, load it
-                spacefile = local_spacefile
-                arc["spacefile"] = os.path.abspath(spacefile)
+        # Try to find code_dir .arco/ in $CWD
+        code_dir = os.path.join(os.getcwd(), ".arco", code)
 
-                arc["space"] = getSpaceName()
-            else:
-                # If no local spacefile exists,
-                # 2. Fall back to active space
-                if index:
-                    # Fall back to "active" space
-                    active_space = arc["index"]["active"]
+        if os.path.isdir(code_dir):
+            logger.debug(f"Found code_dir in {code_dir}")
+            arc["arco"]["code_dir"] = code_dir
+            code_found = True
 
-                    if active_space:
-                        arc["space"] = active_space
-                        arc["spacefile"] = arc["index"]["spaces"][active_space][
-                            "spacefile"
-                        ]
-                    else:
-                        # LAST RESORT
-                        # If no active space can be loaded, proceed with defaults (no space)
-                        logger.debug(
-                            "Cannot find space config. Proceeding with local context"
-                        )
-                        pass
-                else:
-                    logger.error(
-                        "Indexing is disabled. Set --spacefile to select a space directly"
-                    )
-                    raise typer.Abort()
-        pass
+        # Try to find code_dir in app_dir
+        code_dir = os.path.join(arc["arco"]["app_dir"], code)
 
-    # Augment variables if space configuration is available
-    if "spacefile" in arc and arc["spacefile"]:
-        if not os.path.isfile(arc["spacefile"]):
-            logger.error(f"Can't find Spacefile at {os.path.abspath(spacefile)}")
+        if os.path.isdir(code_dir):
+            logger.debug(f"Found code_dir in {code_dir}")
+            arc["arco"]["code_dir"] = code_dir
+            code_found = True
+
+        # Can't find code_dir?
+        # Exit. The user has specified to use it
+        # so we should terminate if it can't be found
+        if not code_found:
+            logger.error(f"Can't locate code in {code}")
             sys.exit(1)
 
-        # Space config
-        arc["config"] = loadSpacefile(arc["spacefile"])
+    if context:
+        # Try to find context_dir locally
+        context_dir = os.path.isdir(os.path.join(os.getcwd(), context))
+        context_found = False
 
-        # Spacefile
-        arc["apollo_spacefile"] = arc["spacefile"]
-        os.environ["APOLLO_SPACEFILE"] = arc["spacefile"]
+        if os.path.isdir(context_dir):
+            logger.debug(f"Found context_dir in {context_dir}")
+            arc["arco"]["context_dir"] = context_dir
+            context_found = True
 
-        # Space directory
-        arc["space_dir"] = str(Path(arc["spacefile"]).parent)
-        arc["apollo_space_dir"] = arc["space_dir"]
-        os.environ["APOLLO_SPACE_DIR"] = arc["space_dir"]
+        # Try to find context_dir .arco/ in $CWD
+        context_dir = os.path.join(os.getcwd(), ".arco", context)
 
-        # Cluster
-        if cluster:
-            arc["cluster"] = cluster
+        if os.path.isdir(context_dir):
+            logger.debug(f"Found context_dir in {context_dir}")
+            arc["arco"]["context_dir"] = context_dir
+            context_found = True
 
-            arc["apollo_cluster"] = arc["cluster"]
-            os.environ["APOLLO_CLUSTER"] = arc["cluster"]
+        # Try to find context_dir in app_dir
+        context_dir = os.path.join(arc["app_dir"], context)
 
-            arc["cluster_dir"] = os.path.join(arc["space_dir"], arc["cluster"])
-            os.environ["APOLLO_CLUSTER_DIR"] = arc["cluster_dir"]
+        if os.path.isdir(context_dir):
+            logger.debug(f"Found context_dir in {context_dir}")
+            arc["arco"]["context_dir"] = context_dir
+            context_found = True
 
-            # Check if cluster exists in spaceconfig
-            if arc["cluster"] in arc["config"]["clusters"]:
-                # Kubernetes
-                if "kubeconfig" in arc["config"]["clusters"][arc["cluster"]]:
-                    cluster_kubeconfig = arc["config"]["clusters"][arc["cluster"]][
-                        "kubeconfig"
-                    ]
-                    logger.debug(f"kubeconfig set to {cluster_kubeconfig}")
-                    arc["kubeconfig"] = cluster_kubeconfig
-                else:
-                    # Check if file exists before populating it
-                    cluster_kubeconfig = os.path.join(
-                        arc["cluster_dir"], "kubeconfig.yml"
-                    )
+        # Can't find context_dir?
+        # Exit. The user has specified to use it
+        # so we should terminate if it can't be found
+        if not context_found:
+            logger.error(f"Can't locate context in {context}")
+            sys.exit(1)
 
-                    if os.path.exists(cluster_kubeconfig):
-                        logger.debug(f"kubeconfig set to {cluster_kubeconfig}")
-                        arc["kubeconfig"] = cluster_kubeconfig
+    # Load context
+    _context = loadConfig(os.path.join(arc["arco"]["context_dir"], "arco.yml"))
 
-                # Docker
-                if "docker_host" in arc["config"]["clusters"][arc["cluster"]]:
-                    docker_host = arc["config"]["clusters"][arc["cluster"]]["docker_host"]
-                    logger.debug(f"Set docker_host to {docker_host}")
-                    arc["docker_host"] = docker_host
+    # Load code context
+    _code = loadConfig(os.path.join(arc["arco"]["code_dir"], "arco.yml"))
 
-    # Kubernetes
-    if arc.get("kubeconfig"):
-        os.environ["KUBECONFIG"] = arc["kubeconfig"]
-        os.environ["K8S_AUTH_KUBECONFIG"] = arc["kubeconfig"]
+    # Merge
+    # 1. Code
+    if _code:
+        # updated_arc = benedict(arc)
+        arc.merge(_code, overwrite=True, concat=False)
 
-    if arc.get("docker_host"):
-        os.environ["DOCKER_HOST"] = arc["docker_host"]
+        logger.debug(f"Merged code from {arc['arco']['code_dir']}")
 
-    # Save CLI context to art
-    arc["context"] = ctx.__dict__
+        # arc = updated_code
 
-    # Update Logging
-    if arc.get("space_dir"):
-        arc["space_logfile"] = os.path.join(arc["space_dir"], "spacelog.json")
+    # 2. Context
+    if _context:
+        arc.merge(_context, overwrite=True, concat=False)
 
-        spacelog_sink = {
-            "sink": arc["space_logfile"],
-            "serialize": True,
-            "filter": lambda record: record["extra"].get("spacelog")
-            and record["extra"]["spacelog"],
-            "format": "{message}",
-        }
-        logger_config["handlers"].append(spacelog_sink)
-        logger.configure(**logger_config)
+        logger.debug(f"Merged context from {arc['arco']['context_dir']}")
+
+    #
+    #
+    #
+
+    arc["ansible"]["roles_path"] = arc["arco"]["code_dir"]
+
+    # Populate extra vars
+    for v in var:
+        key, value = v.split("=")
+
+        # Split key on separator (.)
+        d = benedict(arc)
+        d[key] = value
+
+    # Populate arc to environment
+    dict2Environment(arc)
+
+    arc["arco"]["cli_context"] = ctx.__dict__
 
 
 if __name__ == "__main__":

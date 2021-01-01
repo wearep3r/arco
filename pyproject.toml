@@ -36,6 +36,8 @@ docker = "^4.4.0"
 pyperclip = "^1.8.1"
 loguru = "^0.5.3"
 better-exceptions = "^0.3.2"
+python-fsutil = "^0.4.0"
+python-benedict = "^0.22.4"
 
 [tool.poetry.scripts]
 apollo = "apollo.main:app"
