@@ -23,7 +23,7 @@ import git
 from slugify import slugify
 import datetime
 
-APP_NAME = "apollo"
+APP_NAME = "arco"
 app_dir = typer.get_app_dir(APP_NAME)
 
 
@@ -271,6 +271,7 @@ def getAbsolutePath(path, context_dir):
     return context_path
 
 
+# autocomplete
 def autocomplete_code(incomplete: str):
     # return ["Camila", "Carlos", "Sebastian"]
     root, dirs, files = next(os.walk(arc["arco"]["app_dir"]), ([], [], []))
@@ -280,6 +281,18 @@ def autocomplete_code(incomplete: str):
         if directory.startswith(incomplete):
             completion.append(directory)
     return completion
+
+
+def arc_search(pattern: str):
+    # m = arc.match(pattern, indexes=True)
+    kp = arc.keypaths()
+
+    result = []
+    for keypath in kp:
+        if pattern in keypath:
+            result.append(keypath)
+
+    return result
 
 
 def loadConfig(config_file: str = None):
@@ -293,51 +306,6 @@ def loadConfig(config_file: str = None):
         except Exception as e:
             pass
     return None
-
-
-def saveSpacefile(space_config: dict = None, spacefile: str = None):
-
-    if space_config:
-        try:
-            space_config = anyconfig.dump(space_config, spacefile, "yaml")
-            return space_config
-        except Exception as e:
-            pass
-    return None
-
-
-@app.command(name="open")
-def apollo_open():
-    if "space_dir" in arc:
-        if arc["space_dir"]:
-            typer.launch(arc["space_dir"])
-        else:
-            typer.echo("No config found")
-    else:
-        typer.echo("No config found")
-
-
-@app.command()
-def edit():
-    if "spacefile" in arc:
-        if arc["spacefile"]:
-            typer.launch(arc["spacefile"])
-        else:
-            typer.echo("No config found")
-    else:
-        typer.echo("No config found")
-
-
-def arc_search(pattern: str):
-    # m = arc.match(pattern, indexes=True)
-    kp = arc.keypaths()
-
-    result = []
-    for keypath in kp:
-        if pattern in keypath:
-            result.append(keypath)
-
-    return result
 
 
 @app.command()
