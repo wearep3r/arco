@@ -1,0 +1,7 @@
+arco:
+  entrypoint: make
+docker:
+  buildkit: 1
+ci:
+  project_namespace: wearep3r
+  project_name: arco

@@ -9,14 +9,14 @@ fi
 
 if [ "$1" = 'dev' ];
 then
-  cd /cluster
+  cd /code
   exec "/bin/bash"
-elif [ "$1" = 'apollo' ];
+elif [ "$1" = 'arco' ];
 then
   exec "$@"
 else
-  set -- apollo "$@"
-  cd /cluster
+  set -- arco "$@"
+  cd /code
 fi
 
 exec "$@"

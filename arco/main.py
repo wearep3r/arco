@@ -3,26 +3,25 @@
 import typer
 import os
 import subprocess
-import json
 import sys
 import re
 import anyconfig
 from pathlib import Path
 from read_version import read_version
 from typing import Optional, List
-import namesgenerator
 from dotenv import load_dotenv
 import pyperclip
-import jinja2
 import tempfile
 from loguru import logger
 import pwd
-import functools
 import platform
 import zlib
 import base64
 import fsutil
 from benedict import benedict
+import git
+from slugify import slugify
+import datetime
 
 APP_NAME = "apollo"
 app_dir = typer.get_app_dir(APP_NAME)
@@ -32,6 +31,17 @@ if not os.path.exists(app_dir):
     os.mkdir(app_dir)
     logger.debug(f"Created config directory at {app_dir}")
 
+
+discovery_namespaces = [
+    "ci",
+    "platform",
+    "git",
+    "ansible",
+    "docker",
+    "kubernetes",
+    "k8s",
+    "helm",
+]
 
 logger_config = {
     "handlers": [
@@ -50,6 +60,7 @@ logger_config = {
         # },
     ],
 }
+logger.configure(**logger_config)
 
 
 # @logger.catch()
@@ -98,21 +109,14 @@ arc = benedict(
     {
         "arco": {
             "app_dir": app_dir,
-            "user": pwd.getpwuid(os.getuid()).pw_name,
             "version": read_version(str(Path(__file__).parent / "__init__.py")),
             "cwd": os.getcwd(),
             "hostname": platform.node(),
-            "platform": platform.platform(),
-            "platform_short": platform.platform(terse=True),
-            "platform_system": platform.system(),
-            "platform_version": platform.version(),
-            "platform_release": platform.release(),
-            "platform_machine": platform.machine(),
-            "platform_processor": platform.processor(),
-            "platform_architecture": str(platform.architecture()),
+            "user": pwd.getpwuid(os.getuid()).pw_name,
             "verbosity": 0,
             "context_dir": os.getcwd(),
             "code_dir": os.getcwd(),
+            "date": datetime.datetime.utcnow().isoformat(),
         },
         "k8s": {
             "kubeconfig": os.path.join(os.path.expanduser("~"), ".kube", "config"),
@@ -124,30 +128,74 @@ arc = benedict(
         "kubeconfig": os.path.join(os.path.expanduser("~"), ".kube", "config"),
         "better_exceptions": 1,
         "systemd": {"colors": 1},
-        "docker": {
-            "host": "unix:///var/run/docker.sock",
-        },
         "system_version_compat": 1,  # https://stackoverflow.com/questions/63972113/big-sur-clang-invalid-version-error-due-to-macosx-deployment-target
-        "ansible": {
-            "stdout_callback": "yaml",
-            "display_skipped_hosts": False,
-            "gathering": "smart",
-            "diff_always": True,
-            "display_args_to_stdout": True,
-            "localhost_warning": False,
-            "use_persistent_connections": True,
-            "roles_path": os.getcwd(),
-            "pipelining": True,
-            "callback_whitelist": "profile_tasks",
-            "deprecation_warnings": False,
-            "force_color": True,
-        },
     }
 )
 
 # HELPER COMMANDS
 
 app = typer.Typer(no_args_is_help=True)
+
+
+@logger.catch
+def discoverContext():
+    namespace_context = {}
+
+    for namespace in discovery_namespaces:
+        namespace_context[namespace] = {}
+
+        if namespace in ["platform"]:
+
+            namespace_context[namespace]["name"] = platform.platform()
+            namespace_context[namespace]["name_short"] = platform.platform(terse=True)
+            namespace_context[namespace]["system"] = platform.system()
+            namespace_context[namespace]["version"] = platform.version()
+            namespace_context[namespace]["release"] = platform.release()
+            namespace_context[namespace]["machine"] = platform.machine()
+            namespace_context[namespace]["processor"] = platform.processor()
+            namespace_context[namespace]["architecture"] = str(platform.architecture())
+
+        if namespace in ["ci", "git"]:
+            repo = git.Repo(search_parent_directories=True)
+
+            if repo:
+                namespace_context[namespace]["commit_sha"] = repo.head.commit.hexsha
+                namespace_context[namespace]["commit_short_sha"] = repo.git.rev_parse(
+                    namespace_context[namespace]["commit_sha"], short=8
+                )
+                namespace_context[namespace]["commit_ref_name"] = repo.head.reference.name
+                namespace_context[namespace]["commit_tag"] = repo.tags[0]
+                namespace_context[namespace]["commit_description"] = (
+                    repo.head.commit.message.rstrip() or ""
+                )
+                namespace_context[namespace]["commit_message"] = (
+                    repo.head.commit.message.rstrip() or ""
+                )
+                namespace_context[namespace]["commit_ref_slug"] = (
+                    slugify(repo.head.reference.name.rstrip()) or ""
+                )
+                namespace_context[namespace]["project_name"] = arc["arco"]["name"] or ""
+
+        if namespace in ["ansible"]:
+            namespace_context[namespace]["stdout_callback"] = "yaml"
+            namespace_context[namespace]["display_skipped_hosts"] = False
+            namespace_context[namespace]["gathering"] = "smart"
+            namespace_context[namespace]["diff_always"] = True
+            namespace_context[namespace]["display_args_to_stdout"] = True
+            namespace_context[namespace]["localhost_warning"] = False
+            namespace_context[namespace]["use_persistent_connections"] = True
+            namespace_context[namespace]["roles_path"] = os.getcwd()
+            namespace_context[namespace]["pipelining"] = True
+            namespace_context[namespace]["callback_whitelist"] = "profile_tasks"
+            namespace_context[namespace]["deprecation_warnings"] = False
+            namespace_context[namespace]["force_color"] = True
+            namespace_context[namespace]["roles_path"] = arc["arco"]["code_dir"]
+
+        if namespace in ["docker"]:
+            namespace_context[namespace]["buildkit"] = 1
+            namespace_context[namespace]["host"] = "unix:///var/run/docker.sock"
+
+    return namespace_context
 
 
 def dict2Environment(data, prefix=None, print=False):
@@ -197,6 +245,30 @@ def unhashString(encoded_data: bytes) -> str:
 
 def normalize_name(name):
     return re.sub(r"[^-_a-z0-9]", "", name.lower())
+
+
+def contextualizeDict(d, key, value):
+    if isinstance(value, str):
+        # If "key" contains any of the following words
+        conversion_triggers = ["path", "dir", "folder", "file"]
+
+        # Convert the "value" (we assume it is a directory or file path) to an absolute path
+        if any(trigger in key for trigger in conversion_triggers):
+            full_path = getAbsolutePath(value, arc["arco"]["context_dir"])
+            d[key] = full_path
+
+
+def getAbsolutePath(path, context_dir):
+    context_path = path
+
+    os.chdir(context_dir)
+
+    local_path = os.path.join(os.getcwd(), path)
+
+    if fsutil.exists(local_path):
+        context_path = os.path.abspath(local_path)
+
+    return context_path
 
 
 def autocomplete_code(incomplete: str):
@@ -272,9 +344,7 @@ def arc_search(pattern: str):
 def config(
     silent: bool = False,
     copy: bool = typer.Option(False, "--copy", "-c"),
-    render_yaml: bool = typer.Option(True, "--yaml"),
-    render_json: bool = typer.Option(False, "--json"),
-    render_env: bool = typer.Option(False, "--env"),
+    format: str = typer.Option("json", "--format"),
     pretty: bool = typer.Option(True, "--pretty"),
     save: bool = typer.Option(False, "--save"),
     filter: str = typer.Option(None, "--filter", "-f", autocompletion=arc_search),
@@ -284,26 +354,33 @@ def config(
     config["arco"]["cli_context"] = ""
 
     if filter:
-        config = config[filter]
+        try:
+            filtered_data = benedict()
+            filtered_data[filter] = config[filter]
+            config = filtered_data
+        except KeyError as e:
+            message = str(e).replace("\\", "")
+            logger.warning(f"{message}")
+            config = {}
 
     if print:
-        if render_json:
+        if format == "json":
             if pretty:
-
-                typer.echo(anyconfig.dumps(config, ac_parser="json", indent=2))
+                typer.echo(anyconfig.dumps(config, ac_parser=format, indent=2))
             else:
-                typer.echo(anyconfig.dumps(config, "json"))
+                typer.echo(anyconfig.dumps(config, format))
 
-        elif render_env:
-            dict2Environment(arc, print=True)
+        elif format == "env":
+            if isinstance(config, dict):
+                dict2Environment(config, print=True)
 
-        elif render_yaml:
-            typer.echo(anyconfig.dumps(config, ac_parser="yaml"))
+        elif format == "yaml":
+            typer.echo(anyconfig.dumps(config, ac_parser=format))
 
         return arc
 
     if copy:
-        pyperclip.copy(anyconfig.dumps(config, "yaml"))
+        pyperclip.copy(anyconfig.dumps(config, format))
         pyperclip.paste()
 
     return None
@@ -735,31 +812,98 @@ def apollo_unhash(data: str = typer.Argument(None)):
 #             raise typer.Exit(code=executed.returncode)
 
 
+def mountConfig(config: dict, path: str = None):
+    tmp_file = tempfile.NamedTemporaryFile()
+    anyconfig.dump(config, tmp_file.name, ac_parser="yaml")
+
+    return tmp_file.name
+
+
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
 @logger.catch
-def run(ctx: typer.Context, command: str = typer.Argument(...)):
+def run(ctx: typer.Context):
     args = []
+
+    # Try to get "entrypoint" from context
+    if not arc["arco"]["entrypoint"]:
+        logger.error("No entrypoint defined")
+        sys.exit(1)
+
+    if ctx.args:
+        args = args + ctx.args
+
+    command_list = [arc["arco"]["entrypoint"]] + args
+
+    logger.debug(f"Running command: {' '.join(command_list)}")
+
+    result = subprocess.run(
+        command_list, cwd=arc["arco"]["code_dir"], universal_newlines=True, shell=False
+    )
+
+    if result.returncode != 0:
+        logger.error(
+            f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
+        )
+        sys.exit(result.returncode)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+@logger.catch
+def x(ctx: typer.Context, command: str = typer.Argument(...)):
+    args = []
+    command_list = [command]
 
     if ctx.args:
         args = args + ctx.args
 
     if command in ["ansible-playbook", "ap", "ak"]:
+        # Create tempfile with inventory from config
+        # arc["clusters"][cluster]["inventory"]
+        inventory = benedict(arc["ansible"]["inventory"])
+
+        if inventory:
+            # Create tempfile
+            mounted_inventory = mountConfig(inventory)
+
+            command_list.append("-i")
+            command_list.append(mounted_inventory)
+
+        inventory_file = arc["ansible"].get("inventory_file")
+
+        if inventory_file:
+            command_list.append("-i")
+            command_list.append(inventory_file)
+
+        command_list.append("--extra-vars")
+        command_list.append(f"{arc.dump()}")
+
         pass
 
     if command in ["docker"]:
         pass
 
-    command = [command] + args
+    if command in ["helm"]:
+        if "install" in args:
+            command_list.append("-f")
+            command_list.append(arc["arco"]["mountpoint"])
+
+        pass
+
+    command_list = command_list + args
+
+    logger.debug(f"Running command: {' '.join(command_list)}")
 
     result = subprocess.run(
-        command, cwd=arc["arco"]["code_dir"], universal_newlines=True, shell=False
+        command_list, cwd=arc["arco"]["code_dir"], universal_newlines=True, shell=False
     )
 
     if result.returncode != 0:
         logger.error(
-            f"Command '{' '.join(command)}' returned exit code {result.returncode}"
+            f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
         )
         sys.exit(result.returncode)
 
@@ -781,15 +925,25 @@ def callback(
         None,
         "--context",
         help="The context to load",
-        envvar=["ARCO_CONTEXT"],
+        envvar=["ARCO_CONTEXT_DIR"],
+        autocompletion=autocomplete_code,
+    ),
+    context_file: str = typer.Option(
+        None, "--context-file", envvar=["ARCO_CONTEXT_FILE"]
     ),
     code: str = typer.Option(
         None,
         "--code",
         help="The code to load",
-        envvar=["ARCO_CODE"],
+        envvar=["ARCO_CODE_DIR"],
         autocompletion=autocomplete_code,
     ),
+    default: bool = typer.Option(
+        True,
+        help="Load the default context",
+        envvar=["ARCO_LOAD_DEFAULT_CONTEXT"],
+    ),
+    discover: bool = typer.Option(True),
     env_file: str = typer.Option(
         os.path.join(os.getcwd(), ".env"),
         "--env-file",
@@ -805,6 +959,12 @@ def callback(
         help="an optional name for the context you're running in",
         envvar=["ARCO_CONTEXT_NAME"],
     ),
+    select: Optional[List[str]] = typer.Option(
+        None, "--select", help="Select keypaths to be in the context."
+    ),
+    omit: Optional[List[str]] = typer.Option(
+        None, "--omit", help="Omit keypaths from the context"
+    ),
     var: Optional[List[str]] = typer.Option(
         None,
         "--var",
@@ -816,17 +976,50 @@ def callback(
     ),
 ):
     # Load from .env
-    # load_dotenv(dotenv_path=env_file)
+    load_dotenv(dotenv_path=env_file)
 
     # conf = arc
     global arc
+    global logger
 
+    # Name
     if name:
         arc["arco"]["name"] = name
 
-    if loglevel:
-        arc["arco"]["loglevel"] = loglevel.upper()
-        logger.add(sys.stdout, level=loglevel.upper())
+    # Discovery
+    arc["arco"]["discover"] = discover
+
+    # Loglevel
+    arc["arco"]["loglevel"] = loglevel.upper()
+    logger_config["handlers"][0]["level"] = loglevel.upper()
+    logger.configure(**logger_config)
+
+    # Load default context from app_dir
+    if default:
+        _default_context_file = os.path.join(app_dir, "arco.yml")
+        _default_context = loadConfig(_default_context_file)
+
+        if _default_context:
+            _default_context.traverse(contextualizeDict)
+            arc.merge(_default_context, overwrite=True, concat=False)
+
+            logger.debug(f"Merged default context from {app_dir}")
+
+    # Populate extra vars for the first time
+    # We're doing this twice so we can inject vars to the context
+    # that can be used while pulling additional context
+    # from another endpoint (--context)
+    # Later we will run this piece of code again
+    # to make sure that the --vars overrride loaded context again
+    logger.debug(
+        f"Populating vars from --var to make them available when using --context"
+    )
+    for v in var:
+        key, value = v.split("=")
+
+        # Split key on separator (.)
+        # d = benedict(arc)
+        arc[key] = value
 
     if code:
         # Try to find code_dir locally
@@ -863,7 +1056,7 @@ def callback(
 
     if context:
         # Try to find context_dir locally
-        context_dir = os.path.isdir(os.path.join(os.getcwd(), context))
+        context_dir = os.path.join(os.getcwd(), context)
         context_found = False
 
         if os.path.isdir(context_dir):
@@ -880,7 +1073,7 @@ def callback(
             context_found = True
 
         # Try to find context_dir in app_dir
-        context_dir = os.path.join(arc["app_dir"], context)
+        context_dir = os.path.join(arc["arco"]["app_dir"], context)
 
         if os.path.isdir(context_dir):
             logger.debug(f"Found context_dir in {context_dir}")
@@ -895,20 +1088,33 @@ def callback(
             sys.exit(1)
 
     # Load context
-    _context = loadConfig(os.path.join(arc["arco"]["context_dir"], "arco.yml"))
+    _context_file = os.path.join(arc["arco"]["context_dir"], "arco.yml")
+    _context = loadConfig(_context_file)
+
+    if _context:
+        _context.traverse(contextualizeDict)
 
     # Load code context
-    _code = loadConfig(os.path.join(arc["arco"]["code_dir"], "arco.yml"))
+    _code_file = os.path.join(arc["arco"]["code_dir"], "arco.yml")
+    _code = loadConfig(_code_file)
 
     # Merge
     # 1. Code
     if _code:
-        # updated_arc = benedict(arc)
         arc.merge(_code, overwrite=True, concat=False)
 
         logger.debug(f"Merged code from {arc['arco']['code_dir']}")
 
-        # arc = updated_code
+        # Discover additional stuff
+        if discover:
+            current_dir = os.getcwd()
+            os.chdir(arc["arco"]["code_dir"])
+
+            discovered = discoverContext()
+
+            arc.merge(discovered, overwrite=True, concat=False)
+
+            os.chdir(current_dir)
 
     # 2. Context
     if _context:
@@ -916,24 +1122,20 @@ def callback(
 
         logger.debug(f"Merged context from {arc['arco']['context_dir']}")
 
-    #
-    #
-    #
-
-    arc["ansible"]["roles_path"] = arc["arco"]["code_dir"]
-
     # Populate extra vars
+    logger.debug(f"Populating vars from --var")
     for v in var:
         key, value = v.split("=")
 
         # Split key on separator (.)
-        d = benedict(arc)
-        d[key] = value
+        # d = benedict(arc)
+        arc[key] = value
 
     # Populate arc to environment
     dict2Environment(arc)
 
-    arc["arco"]["cli_context"] = ctx.__dict__
+    # Mount arc
+    arc["arco"]["mountpoint"] = mountConfig(arc)
 
 
 if __name__ == "__main__":

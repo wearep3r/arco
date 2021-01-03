@@ -15,9 +15,7 @@ ifeq ($(origin .RECIPEPREFIX), undefined)
 endif
 .RECIPEPREFIX = >
 
-DOCKER_SHELLFLAGS ?= run --rm -it --hostname apollo-dev -v ${HOME}/.docker:/root/.docker -v ${HOME}/.ssh:/root/.ssh -v ${HOME}/.gitconfig:/root/.gitconfig -v ${PWD}:/${APOLLO_WHITELABEL_NAME} -v ${HOME}/.${APOLLO_WHITELABEL_NAME}/:/root/.${APOLLO_WHITELABEL_NAME} ${APOLLO_WHITELABEL_NAME}:${APOLLO_VERSION}
-
-export DOCKER_BUILDKIT=1
+#DOCKER_SHELLFLAGS ?= run --rm -it --hostname arco-dev -v ${HOME}/.docker:/root/.docker -v ${HOME}/.ssh:/root/.ssh -v ${HOME}/.gitconfig:/root/.gitconfig -v ${PWD}:/${APOLLO_WHITELABEL_NAME} -v ${HOME}/.${APOLLO_WHITELABEL_NAME}/:/root/.${APOLLO_WHITELABEL_NAME} ${APOLLO_WHITELABEL_NAME}:${APOLLO_VERSION}
 
 .PHONY: help
 help:
@@ -25,20 +23,18 @@ help:
 
 .PHONY: build-package
 build-package:
-#> @docker image prune -f
 > poetry build
 
 .PHONY: build-docker
 build-docker:
-#> @docker image prune -f
-> docker build --build-arg BUILD_DATE=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ') --build-arg BUILD_VERSION=$(shell apollo --version) --build-arg VCS_REF=$(shell git rev-parse --short HEAD) -t wearep3r/apollo .
+> docker build --build-arg BUILD_DATE=${ARCO_DATE} --build-arg BUILD_VERSION=$(shell arco --version) --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} -t ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME} .
 
 .PHONY: publish-docker
 publish-docker: build-docker
-> docker tag wearep3r/apollo wearep3r/apollo:$(shell apollo --version)
-> docker push wearep3r/apollo:$(shell apollo --version)
-> docker tag wearep3r/apollo wearep3r/apollo:latest
-> docker push wearep3r/apollo:latest
+> docker tag ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME} ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:$(shell arco --version)
+> docker push ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:$(shell arco --version)
+> docker tag ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME} ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:latest
+> docker push ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:latest
 
 .PHONY: publish-semrel
 publish-sem-rel:

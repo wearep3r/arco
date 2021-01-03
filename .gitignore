@@ -62,3 +62,4 @@ dist
 .pytest*
 _demo
 _empty
+**/**_ansible
