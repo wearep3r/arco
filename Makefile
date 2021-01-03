@@ -36,7 +36,7 @@ publish-docker: build-docker ## publish docker image (version tag and latest)
 
 .PHONY: publish-semrel
 publish-semrel: ## generate version and pubish to pypi 
-#> git push origin master
+> @git push origin master
 > @semantic-release publish
 
 .PHONY: publish
