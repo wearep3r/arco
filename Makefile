@@ -37,12 +37,12 @@ publish-docker: build-docker
 > docker push ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:latest
 
 .PHONY: publish-semrel
-publish-sem-rel:
+publish-semrel:
 #> git push origin master
 > semantic-release publish
 
 .PHONY: publish
-publish: publish-semrel publish-docker
+publish: publish-semrel  publish-docker
 #> @docker image prune -f
 > echo "Publishing"
 
