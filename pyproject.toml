@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "arco"
-version = "0.1.1"
+version = "0.1.2"
 description = "An automation API framework for cloud-native SRE and DevOps"
 authors = ["Fabian Peter <fabian@p3r.link>"]
 license = "LICENSE.md"

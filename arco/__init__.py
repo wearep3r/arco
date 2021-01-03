@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __app_name__ = "arco"
 
 __author__ = "Fabian Peter <fabian@p3r.link>"
