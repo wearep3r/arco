@@ -34,6 +34,7 @@ better-exceptions = "^0.3.2"
 python-fsutil = "^0.4.0"
 python-benedict = "^0.22.4"
 python-slugify = "^4.0.1"
+shortuuid = "^1.0.1"
 
 [tool.poetry.scripts]
 arco = "arco.main:app"

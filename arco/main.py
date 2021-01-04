@@ -24,6 +24,7 @@ from slugify import slugify
 import datetime
 import functools
 import shellingham
+import shortuuid
 
 APP_NAME = "arco"
 app_dir = typer.get_app_dir(APP_NAME)
@@ -33,6 +34,12 @@ if not os.path.exists(app_dir):
     os.mkdir(app_dir)
     logger.debug(f"Created config directory at {app_dir}")
 
+
+lookup_dirs = [
+    os.getcwd(),
+    os.path.join(os.getcwd(), ".arco"),
+    app_dir,
+]
 
 discovery_namespaces = [
     "ci",
@@ -48,10 +55,10 @@ discovery_namespaces = [
 logger_config = {
     "handlers": [
         {
-            "sink": sys.stdout,
+            "sink": sys.stderr,
             "format": "<green>{time:YYYY-MM-DD HH:mm:ss}</green> - <lvl>{level}</lvl> - <lvl>{message}</lvl>",
             "filter": lambda record: "history" not in record["extra"],
-            "level": "WARNING",
+            "level": "INFO",
         },
         {
             "sink": os.path.join(app_dir, "history.json"),
@@ -80,6 +87,7 @@ def arcolog(*, entry=False, exit=True, level="INFO"):
                 "history": True,
                 "successful": False,
                 "result": None,
+                "uuid": shortuuid.uuid()[:8],
             }
 
             if result:
@@ -131,9 +139,10 @@ arc = benedict(
             "hostname": platform.node(),
             "user": pwd.getpwuid(os.getuid()).pw_name,
             "verbosity": 0,
-            "context_dir": os.getcwd(),
-            "code_dir": os.getcwd(),
             "date": datetime.datetime.utcnow().isoformat(),
+            "context": {"dir": os.getcwd()},
+            "code": {"dir": os.getcwd()},
+            "origins": {},
         },
         "k8s": {
             "kubeconfig": os.path.join(os.path.expanduser("~"), ".kube", "config"),
@@ -173,7 +182,11 @@ def discoverContext():
             namespace_context[namespace]["architecture"] = str(platform.architecture())
 
         if namespace in ["ci", "git"]:
-            repo = git.Repo(search_parent_directories=True)
+            repo = None
+            try:
+                repo = git.Repo(search_parent_directories=True)
+            except:
+                pass
 
             if repo:
                 namespace_context[namespace]["commit_sha"] = repo.head.commit.hexsha
@@ -208,16 +221,20 @@ def discoverContext():
             namespace_context[namespace]["callback_whitelist"] = "profile_tasks"
             namespace_context[namespace]["deprecation_warnings"] = False
             namespace_context[namespace]["force_color"] = True
-            namespace_context[namespace]["roles_path"] = arc["arco"]["code_dir"]
+            namespace_context[namespace]["roles_path"] = arc["arco"]["code"]["dir"]
 
         if namespace in ["docker"]:
             namespace_context[namespace]["buildkit"] = 1
             namespace_context[namespace]["host"] = "unix:///var/run/docker.sock"
 
+        if namespace in ["tf"]:
+            namespace_context[namespace]["in_automation"] = 1
+            namespace_context[namespace]["input"] = 0
+
     return namespace_context
 
 
-def dict2Environment(data, prefix=None, print=False):
+def dict2Environment(data, prefix=None, print=False, uppercase=True):
     env_dict = benedict(data, keypath_separator=".")
 
     f = env_dict
@@ -238,7 +255,13 @@ def dict2Environment(data, prefix=None, print=False):
             continue
 
         # Flatten key
-        key = key.replace(".", "_").upper()
+        key = key.replace(".", "_")
+
+        if uppercase:
+            key = key.upper()
+
+        if prefix:
+            key = f"{prefix}_{key}"
 
         if print:
             typer.echo(f"{key}={value}")
@@ -273,7 +296,7 @@ def contextualizeDict(d, key, value):
 
         # Convert the "value" (we assume it is a directory or file path) to an absolute path
         if any(trigger in key for trigger in conversion_triggers):
-            full_path = getAbsolutePath(value, arc["arco"]["context_dir"])
+            full_path = getAbsolutePath(value, arc["arco"]["context"]["dir"])
             d[key] = full_path
 
 
@@ -327,6 +350,66 @@ def loadConfig(config_file: str = None):
     return None
 
 
+def discoverConfig(path: str = os.getcwd()):
+    # Accepted files
+    autodiscover_configs = [
+        "arco.yml",
+        "arco.json",
+        ".arco.yml",
+        ".arco.json",
+    ]
+
+    for config in autodiscover_configs:
+        config_path = os.path.join(path, config)
+
+        if fsutil.exists(config_path):
+            return config_path
+
+
+@app.command()
+@arcolog()
+def create(name: str = typer.Argument(...)):
+    """
+    Create an API Object
+    """
+
+    config_path = os.path.join(arc["arco"]["app_dir"], name)
+    config_file = os.path.join(config_path, "arco.yml")
+
+    config = benedict()
+
+    try:
+        if not os.path.exists(config_path):
+            logger.debug(f"Creating directory {config_path}")
+            os.mkdir(config_path)
+
+        if not os.path.exists(config_file):
+            logger.debug(f"Creating {config_file}")
+            config.to_yaml(filepath=config_file)
+
+        typer.launch(config_file)
+    except Exception as e:
+        logger.error(f"{e}")
+    typer.launch(config_file)
+
+    return True
+
+
+@app.command()
+@arcolog()
+def edit(default: bool = typer.Option(False, help="Edit the default context file")):
+    """
+    Edit the context file. Will use context_dir to determine the file to edit
+    """
+    default_context_file = os.path.join(arc["arco"]["app_dir"], "arco.yml")
+    current_context_file = os.path.join(arc["arco"]["context"]["dir"], "arco.yml")
+
+    if os.path.exists(current_context_file) and not default:
+        typer.launch(current_context_file)
+    else:
+        typer.launch(default_context_file)
+
+
 @app.command()
 @arcolog()
 def context(
@@ -352,6 +435,7 @@ def context(
             config = {}
 
     if print:
+        config.clean(strings=True, collections=True)
         if format == "json":
             if pretty:
                 typer.echo(anyconfig.dumps(config, ac_parser=format, indent=2))
@@ -363,7 +447,11 @@ def context(
                 dict2Environment(config, print=True)
 
         elif format == "yaml":
-            typer.echo(anyconfig.dumps(config, ac_parser=format))
+            print(config.to_yaml())
+            # typer.echo(anyconfig.dumps(config, ac_parser=format))
+        else:
+            logger.error(f"Format {format} not supported")
+            sys.exit(1)
 
         return arc
 
@@ -375,6 +463,7 @@ def context(
 
 
 @app.command()
+@arcolog()
 def clone(repository: str, directory: str = typer.Argument(app_dir)):
     """
     Clone code or context
@@ -396,6 +485,7 @@ def clone(repository: str, directory: str = typer.Argument(app_dir)):
 
 
 @app.command()
+@arcolog()
 def commit(message: str):
     """
     Commit configuration changes to the space (requires git)
@@ -411,6 +501,7 @@ def commit(message: str):
 
 
 @app.command()
+@arcolog()
 def push():
     """
     Push configuration changes to the space repository (requires git)
@@ -425,7 +516,48 @@ def push():
     return push
 
 
+@app.command()
+def history(filter: str = typer.Option(None)):
+    """
+    Show the arco history
+    """
+
+    history_file = os.path.join(app_dir, "history.json")
+
+    with open(history_file) as f:
+        for line in f:
+            data = benedict.from_json(line)
+
+            if filter:
+                if filter not in data:
+                    print("NOT FOUND")
+                    pass
+            message_uuid = typer.style(
+                f"{data['record']['extra']['uuid']}",
+                fg=typer.colors.WHITE,
+                bold=False,
+            )
+
+            message_date = typer.style(
+                f"{data['record']['time']['repr']}", fg=typer.colors.WHITE, bold=False
+            )
+
+            if data["record"]["extra"]["successful"]:
+                message_text = typer.style(
+                    f"{data['record']['message']}", fg=typer.colors.GREEN, bold=False
+                )
+            else:
+                message_text = typer.style(
+                    f"{data['record']['message']}", fg=typer.colors.RED, bold=False
+                )
+
+            message = f"{message_uuid} | {message_date} | {message_text}"
+
+            typer.echo(message)
+
+
 @app.command(name="hash")
+@arcolog()
 def arco_hash(data=typer.Argument(None)):
 
     if data:
@@ -453,6 +585,7 @@ def arco_hash(data=typer.Argument(None)):
 
 
 @app.command(name="unhash")
+@arcolog()
 def arco_unhash(data: str = typer.Argument(None)):
     if data:
         data = "\n".join([data])
@@ -490,23 +623,24 @@ def mountConfig(config: dict, path: str = None):
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
 @logger.catch
+@arcolog()
 def run(ctx: typer.Context):
     args = []
 
     # Try to get "entrypoint" from context
-    if not arc["arco"]["entrypoint"]:
+    if not arc["arco"]["code"]["entrypoint"]:
         logger.error("No entrypoint defined")
         sys.exit(1)
 
     if ctx.args:
         args = args + ctx.args
 
-    command_list = [arc["arco"]["entrypoint"]] + args
+    command_list = [arc["arco"]["code"]["entrypoint"]] + args
 
     logger.debug(f"Running command: {' '.join(command_list)}")
 
     result = subprocess.run(
-        command_list, cwd=arc["arco"]["code_dir"], universal_newlines=True, shell=False
+        command_list, cwd=arc["arco"]["code"]["dir"], universal_newlines=True, shell=False
     )
 
     if result.returncode != 0:
@@ -520,6 +654,61 @@ def run(ctx: typer.Context):
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
 @logger.catch
+@arcolog()
+def shell(ctx: typer.Context):
+    args = []
+    if ctx.args:
+        args = args + ctx.args
+
+    user_shell = None
+
+    try:
+        user_shell = shellingham.detect_shell()
+    except shellingham.ShellDetectionFailure:
+        user_shell = provide_default_shell()
+
+    command_list = [user_shell[1]]
+
+    # Manipulate PS1
+    ps1 = os.environ.get("PS1") or ""
+
+    ps1 = " ".join([f"[{arc['arco']['name']}] ", ps1])
+    os.environ["PS1"] = ps1
+
+    logger.debug(f"Setting shell to {user_shell[1]}")
+    logger.info(f"Entering interactive shell. To exit this shell, just run 'exit'")
+
+    command_list = command_list + args
+
+    try:
+        result = subprocess.run(
+            command_list,
+            cwd=arc["arco"]["code"]["dir"],
+            universal_newlines=True,
+            shell=True,
+            env=os.environ.copy(),
+            executable=user_shell[1],
+        )
+
+        if result.returncode != 0:
+            logger.warning(
+                f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
+            )
+            return False
+
+        return True
+    except Exception as e:
+        logger.error(e)
+        return False
+
+    return True
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+@logger.catch
+@arcolog()
 def x(ctx: typer.Context, command: str = typer.Argument(...)):
     args = []
     command_list = [command]
@@ -555,6 +744,12 @@ def x(ctx: typer.Context, command: str = typer.Argument(...)):
     if command in ["docker"]:
         pass
 
+    if command in ["terraform"]:
+        # Export vars with TF_PREFIX
+        dict2Environment(arc, prefix="TF_VAR", uppercase=False)
+
+        pass
+
     if command in ["helm"]:
         if "install" in args:
             command_list.append("-f")
@@ -562,43 +757,31 @@ def x(ctx: typer.Context, command: str = typer.Argument(...)):
 
         pass
 
-    if command in ["shell"]:
-        activate_shell = True
-        user_shell = None
-
-        try:
-            user_shell = shellingham.detect_shell()
-        except shellingham.ShellDetectionFailure:
-            user_shell = provide_default_shell()
-
-        command_list = [user_shell[1]]
-
-        # Manipulate PS1
-        ps1 = os.environ.get("PS1") or ""
-
-        ps1 = " ".join([f"[{arc['arco']['name']}] ", ps1])
-        os.environ["PS1"] = ps1
-
-        logger.debug(f"Setting shell to {user_shell[1]}")
-        logger.debug(f"Making session interactive. To exit this shell, just run 'exit'")
-
     command_list = command_list + args
 
     logger.debug(f"Running command: {' '.join(command_list)}")
 
-    result = subprocess.run(
-        command_list,
-        cwd=arc["arco"]["code_dir"],
-        universal_newlines=True,
-        shell=activate_shell,
-        env=os.environ.copy(),
-    )
-
-    if result.returncode != 0:
-        logger.error(
-            f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
+    try:
+        result = subprocess.run(
+            command_list,
+            cwd=arc["arco"]["code"]["dir"],
+            universal_newlines=True,
+            shell=activate_shell,
+            env=os.environ.copy(),
         )
-        sys.exit(result.returncode)
+
+        if result.returncode != 0:
+            logger.warning(
+                f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
+            )
+            return False
+
+        return result.returncode
+    except Exception as e:
+        logger.error(e)
+        return False
+
+    return True
 
 
 def version_callback(value: bool):
@@ -611,17 +794,17 @@ def version_callback(value: bool):
 @app.callback(
     invoke_without_command=True,
 )
-# @logger.catch
+@logger.catch
 def callback(
     ctx: typer.Context,
-    context: str = typer.Option(
+    contexts: Optional[List[str]] = typer.Option(
         None,
         "--context",
-        help="The context to load",
+        help="Context sources to query",
         envvar=["ARCO_CONTEXT_DIR"],
         autocompletion=autocomplete_code,
     ),
-    context_file: str = typer.Option(
+    context_files: Optional[List[str]] = typer.Option(
         None, "--context-file", envvar=["ARCO_CONTEXT_FILE"]
     ),
     code: str = typer.Option(
@@ -633,7 +816,7 @@ def callback(
     ),
     default: bool = typer.Option(
         True,
-        help="Load the default context",
+        help=f"Load default context from {app_dir}",
         envvar=["ARCO_LOAD_DEFAULT_CONTEXT"],
     ),
     discover: bool = typer.Option(True),
@@ -644,13 +827,19 @@ def callback(
         help="A file containing environment variables to be used during command execution",
         envvar=["ARCO_ENV_FILE"],
     ),
-    loglevel: str = typer.Option("WARNING", "--loglevel", help="Loglevel"),
+    local: bool = typer.Option(True, help="Load local context from $PWD"),
+    loglevel: str = typer.Option(
+        logger_config["handlers"][0]["level"], "--loglevel", help="Loglevel"
+    ),
     name: str = typer.Option(
         normalize_name(os.path.basename(os.getcwd())),
         "--name",
         "-n",
         help="an optional name for the context you're running in",
         envvar=["ARCO_CONTEXT_NAME"],
+    ),
+    reload_vars: bool = typer.Option(
+        True, help="Reload vars from --vars after context has been loaded"
     ),
     select: Optional[List[str]] = typer.Option(
         None, "--select", help="Select keypaths to be in the context."
@@ -675,28 +864,57 @@ def callback(
     global arc
     global logger
 
-    # Name
-    if name:
-        arc["arco"]["name"] = name
-
-    # Discovery
-    arc["arco"]["discover"] = discover
-
     # Loglevel
     arc["arco"]["loglevel"] = loglevel.upper()
     logger_config["handlers"][0]["level"] = loglevel.upper()
     logger.configure(**logger_config)
 
+    # Discovery
+    arc["arco"]["discover"] = discover
+
+    stdin = False
+
+    if not sys.stdin.isatty():
+        stdin = True
+        line_container = []
+        lines = sys.stdin.readlines()
+
+        for line in lines:
+            if line != "":
+                #    line_container.append(line.rstrip("\n\n"))
+                line_container.append(line)
+
+        _context_from_stdin = benedict("".join(line_container))
+
+        # Merge context to arc
+        arc.merge(_context_from_stdin, overwrite=True, concat=False)
+        logger.debug(f"Loading context from STDIN")
+
+    # Name
+    if not arc["arco"].get("name"):
+        arc["arco"]["name"] = name
+        logger.debug(f"Setting name to {name}")
+
+    # Context files to load
+    running_context_files = []
+
     # Load default context from app_dir
-    if default:
-        _default_context_file = os.path.join(app_dir, "arco.yml")
-        _default_context = loadConfig(_default_context_file)
+    if default and not stdin:
+        _default_config_path = discoverConfig(arc["arco"]["app_dir"])
+        logger.debug(f"Checking {_default_config_path} for context")
 
-        if _default_context:
-            _default_context.traverse(contextualizeDict)
-            arc.merge(_default_context, overwrite=True, concat=False)
+        if fsutil.exists(_default_config_path):
+            running_context_files.append(_default_config_path)
+            logger.debug(f"Loading {_default_config_path}")
 
-            logger.debug(f"Merged default context from {app_dir}")
+    # Load local context from CWD
+    if local and not stdin:
+        _local_config_path = discoverConfig(os.getcwd())
+        logger.debug(f"Checking {_local_config_path} for context")
+
+        if fsutil.exists(_local_config_path):
+            running_context_files.append(_local_config_path)
+            logger.debug(f"Loading {_local_config_path}")
 
     # Populate extra vars for the first time
     # We're doing this twice so we can inject vars to the context
@@ -715,102 +933,128 @@ def callback(
         arc[key] = value
 
     if code:
-        code_lookup_dirs = [
-            os.getcwd(),
-            os.path.join(os.getcwd(), ".arco"),
-            arc["arco"]["app_dir"],
-        ]
-        code_found = False
+        code_dir = None
 
-        for code_lookup_dir in code_lookup_dirs:
-            if not code_found:
-                code_dir = os.path.join(code_lookup_dir, code)
-                logger.debug(f"Asserting {code_dir} as code_dir")
-                if os.path.isdir(code_dir):
-                    logger.debug(f"Found code_dir in {code_dir}")
-                    code_found = True
-                    arc["arco"]["code_dir"] = code_dir
+        for lookup_dir in lookup_dirs:
+            _code_dir = os.path.join(lookup_dir, code)
+            logger.debug(f"Checking {_code_dir} for code")
 
-        # Can't find code_dir?
-        # Exit. The user has specified to use it
-        # so we should terminate if it can't be found
-        if not code_found:
-            logger.error(f"Can't locate code_dir: {code}")
+            if os.path.isdir(_code_dir):
+                code_dir = _code_dir
+                logger.debug(f"Found code in {code_dir}")
+
+        if not code_dir:
+            logger.error(f"Cannot find code: {code}")
             sys.exit(1)
+    else:
+        code_dir = arc["arco"]["code"]["dir"]
 
-    if context:
-        context_lookup_dirs = [
-            os.getcwd(),
-            os.path.join(os.getcwd(), ".arco"),
-            arc["arco"]["app_dir"],
-        ]
-        context_found = False
+    # Discover additional stuff
+    if discover:
+        current_dir = os.getcwd()
+        os.chdir(code_dir)
 
-        for context_lookup_dir in context_lookup_dirs:
-            if not context_found:
-                context_dir = os.path.join(context_lookup_dir, context)
-                logger.debug(f"Asserting {context_dir} as context_dir")
-                if os.path.isdir(context_dir):
-                    logger.debug(f"Found context_dir in {context_dir}")
-                    context_found = True
-                    arc["arco"]["context_dir"] = context_dir
+        discovered = discoverContext()
+
+        arc.merge(discovered, overwrite=True, concat=False)
+
+        os.chdir(current_dir)
+
+    # Locate context
+    code_context_file = discoverConfig(code_dir)
+
+    if code_context_file:
+        if code_context_file not in running_context_files:
+            running_context_files.append(code_context_file)
+            logger.debug(f"Loading {code_context_file}")
+        else:
+            logger.debug(
+                f"Skipping code context {code_context_file} (already discovered)"
+            )
+
+    arc["arco"]["code"]["dir"] = code_dir
+
+    # Discover contexts
+    for context in contexts:
+        context_dir = None
+
+        for context_lookup_dir in lookup_dirs:
+            if not context_dir:
+                _context_dir = os.path.join(context_lookup_dir, context)
+                logger.debug(f"Checking {_context_dir} for context")
+
+                if os.path.isdir(_context_dir):
+                    context_dir = _context_dir
+                    logger.debug(f"Found context in {context_dir}")
 
         # Can't find context_dir?
         # Exit. The user has specified to use it
         # so we should terminate if it can't be found
-        if not context_found:
-            logger.error(f"Can't locate context_dir: {context}")
+        if not context_dir:
+            logger.error(f"Can't locate context {context}")
             sys.exit(1)
 
-    # Load context
-    _context_file = os.path.join(arc["arco"]["context_dir"], "arco.yml")
-    _context = loadConfig(_context_file)
+        # Load context
+        context_file = discoverConfig(context_dir)
 
-    if _context:
-        _context.traverse(contextualizeDict)
+        if context_file:
+            if context_file not in running_context_files:
+                running_context_files.append(context_file)
+                logger.debug(f"Loading {context_file}")
+            else:
+                logger.debug(f"Skipping context {context_file} (already discovered)")
 
-    # Load code context
-    _code_file = os.path.join(arc["arco"]["code_dir"], "arco.yml")
-    _code = loadConfig(_code_file)
+    # Append context-files (form --context-file)
+    for context_file in context_files:
+        running_context_files.append(context_file)
 
-    # Merge
-    # 1. Code
-    if _code:
-        arc.merge(_code, overwrite=True, concat=False)
+    # Loop over running_context_files
+    # Load and merge
+    for running_context_file in running_context_files:
+        _context = loadConfig(running_context_file)
 
-        logger.debug(f"Merged code from {arc['arco']['code_dir']}")
+        if _context:
+            # Make context paths absolute
+            _arc_context_dir = arc["arco"]["context"]["dir"]
 
-        # Discover additional stuff
-        if discover:
-            current_dir = os.getcwd()
-            os.chdir(arc["arco"]["code_dir"])
+            arc["arco"]["context"]["dir"] = os.path.dirname(running_context_file)
 
-            discovered = discoverContext()
+            _context.traverse(contextualizeDict)
 
-            arc.merge(discovered, overwrite=True, concat=False)
+            keypaths = _context.keypaths(indexes=False)
+            for keypath in keypaths:
+                if not keypath.startswith("arco.origins"):
+                    arc["arco"]["origins"][keypath] = running_context_file
 
-            os.chdir(current_dir)
+            arc.merge(_context, overwrite=True, concat=False)
 
-    # 2. Context
-    if _context:
-        arc.merge(_context, overwrite=True, concat=False)
+            logger.debug(f"Merged context from {running_context_file}")
 
-        logger.debug(f"Merged context from {arc['arco']['context_dir']}")
+            arc["arco"]["context"]["dir"] = _arc_context_dir
 
     # Populate extra vars
-    logger.debug(f"Populating vars from --var")
-    for v in var:
-        key, value = v.split("=")
+    if reload_vars:
+        logger.debug("Reloading vars from --var")
+        for v in var:
+            key, value = v.split("=")
 
-        # Split key on separator (.)
-        # d = benedict(arc)
-        arc[key] = value
-
-    # Populate arc to environment
-    dict2Environment(arc)
+            # Split key on separator (.)
+            # d = benedict(arc)
+            arc[key] = value
 
     # Mount arc
     arc["arco"]["mountpoint"] = mountConfig(arc)
+    logger.debug(f"Mounting context in {arc['arco']['mountpoint']}")
+
+    # Populate arc to environment
+    logger.debug(
+        f"Populating context to environment. Run '{APP_NAME} context --format env' to see available environment variables"
+    )
+    dict2Environment(arc)
+
+    # Export vars with TF_PREFIX
+    logger.debug("Populating Terraform context to environment")
+    dict2Environment(arc, prefix="TF_VAR", uppercase=False)
 
 
 if __name__ == "__main__":

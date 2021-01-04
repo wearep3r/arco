@@ -1,5 +1,6 @@
 arco:
-  entrypoint: make
+  code:
+    entrypoint: make
 docker:
   buildkit: 1
 ci:
