@@ -1,8 +1,18 @@
 arco:
-  code:
-    entrypoint: make
-docker:
-  buildkit: 1
+  api:
+    default:
+      entrypoint: make
+      args:
+        - help
+    build:
+      entrypoint: make
+      args: 
+        - build
+    publish:
+      entrypoint: make
+      args:
+        - publish
 ci:
   project_namespace: wearep3r
   project_name: arco
+_code: "asd"

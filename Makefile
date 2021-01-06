@@ -27,6 +27,10 @@ build-package: ## build package with poetry
 build-docker: ## build docker image
 > @docker build --build-arg BUILD_DATE=${ARCO_DATE} --build-arg BUILD_VERSION=$(shell arco --version) --build-arg VCS_REF=${CI_COMMIT_SHORT_SHA} -t ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME} .
 
+.PHONY: build
+build: build-package build-docker ## build package and docker image
+
+
 .PHONY: publish-docker
 publish-docker: build-docker ## publish docker image (version tag and latest)
 > @docker tag ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME} ${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}:$(shell arco --version)
@@ -42,4 +46,3 @@ publish-semrel: ## generate version and pubish to pypi
 .PHONY: publish
 publish: publish-semrel publish-docker ## run all the publish steps
 #> @docker image prune -f
-> @echo "Publishing"

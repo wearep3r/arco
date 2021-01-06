@@ -34,6 +34,7 @@ if not os.path.exists(app_dir):
     os.mkdir(app_dir)
     logger.debug(f"Created config directory at {app_dir}")
 
+running_data_sources = []
 
 lookup_dirs = [
     os.getcwd(),
@@ -121,6 +122,16 @@ def provide_default_shell():
     raise NotImplementedError(f"OS {os.name!r} support not available")
 
 
+def getShell():
+    user_shell = None
+    try:
+        user_shell = shellingham.detect_shell()[1]
+    except shellingham.ShellDetectionFailure:
+        user_shell = provide_default_shell()[1]
+
+    return user_shell
+
+
 # def wrapped(*args, **kwargs):
 #     start = time.time()
 #     result = func(*args, **kwargs)
@@ -142,6 +153,10 @@ arc = benedict(
             "date": datetime.datetime.utcnow().isoformat(),
             "context": {"dir": os.getcwd()},
             "code": {"dir": os.getcwd()},
+            "api": {
+                "default": {"entrypoint": "cat", "args": "README.md"},
+                "context": {"entrypoint": "self", "args": None},
+            },
             "origins": {},
         },
         "k8s": {
@@ -239,7 +254,7 @@ def dict2Environment(data, prefix=None, print=False, uppercase=True):
 
     f = env_dict
     f.clean(strings=True, collections=True)
-    f.standardize()
+    # f.standardize()
     key_paths = f.keypaths(indexes=True)
 
     # print(key_paths)
@@ -294,10 +309,11 @@ def contextualizeDict(d, key, value):
         # If "key" contains any of the following words
         conversion_triggers = ["path", "dir", "folder", "file"]
 
-        # Convert the "value" (we assume it is a directory or file path) to an absolute path
-        if any(trigger in key for trigger in conversion_triggers):
-            full_path = getAbsolutePath(value, arc["arco"]["context"]["dir"])
-            d[key] = full_path
+        if not isinstance(d, list):
+            # Convert the "value" (we assume it is a directory or file path) to an absolute path
+            if any(trigger in key for trigger in conversion_triggers):
+                full_path = getAbsolutePath(value, arc["arco"]["context"]["dir"])
+                d[key] = full_path
 
 
 def getAbsolutePath(path, context_dir):
@@ -344,9 +360,28 @@ def loadConfig(config_file: str = None):
 
         try:
             arco_config = benedict(config_file, format=extension)
+
+            # Save current context dir
+            _arc_context_dir = arc["arco"]["context"]["dir"]
+
+            # Set current context dir to this context
+            arc["arco"]["context"]["dir"] = os.path.dirname(config_file)
+
+            # Make paths absolute
+            arco_config.traverse(contextualizeDict)
+
+            # Save origin of this context path to arc._origins
+            keypaths = arco_config.keypaths(indexes=False)
+            for keypath in keypaths:
+                if not keypath.startswith("arco.origins"):
+                    arc["arco"]["origins"][keypath] = config_file
+
+            # Reset current context_dir
+            arc["arco"]["context"]["dir"] = _arc_context_dir
+
             return arco_config
         except Exception as e:
-            pass
+            print(f"Exception: {e}")
     return None
 
 
@@ -624,30 +659,24 @@ def mountConfig(config: dict, path: str = None):
 )
 @logger.catch
 @arcolog()
-def run(ctx: typer.Context):
+def run(
+    ctx: typer.Context,
+    api_path: str = typer.Argument(
+        f"{os.getcwd()}/default", help="Path to the API Endpoint"
+    ),
+):
+    logger.debug(f"Running API '{api_path}'")
     args = []
-
-    # Try to get "entrypoint" from context
-    if not arc["arco"]["code"]["entrypoint"]:
-        logger.error("No entrypoint defined")
-        sys.exit(1)
 
     if ctx.args:
         args = args + ctx.args
 
-    command_list = [arc["arco"]["code"]["entrypoint"]] + args
+    result = callAPI(api_path, args)
 
-    logger.debug(f"Running command: {' '.join(command_list)}")
+    if result:
+        print(result)
 
-    result = subprocess.run(
-        command_list, cwd=arc["arco"]["code"]["dir"], universal_newlines=True, shell=False
-    )
-
-    if result.returncode != 0:
-        logger.error(
-            f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
-        )
-        sys.exit(result.returncode)
+    return result
 
 
 @app.command(
@@ -655,19 +684,17 @@ def run(ctx: typer.Context):
 )
 @logger.catch
 @arcolog()
-def shell(ctx: typer.Context):
+def shell(
+    ctx: typer.Context,
+    api_path: str = typer.Argument(..., help="Path to the API Endpoint"),
+):
     args = []
     if ctx.args:
         args = args + ctx.args
 
-    user_shell = None
+    user_shell = getShell()
 
-    try:
-        user_shell = shellingham.detect_shell()
-    except shellingham.ShellDetectionFailure:
-        user_shell = provide_default_shell()
-
-    command_list = [user_shell[1]]
+    command_list = [user_shell]
 
     # Manipulate PS1
     ps1 = os.environ.get("PS1") or ""
@@ -687,7 +714,7 @@ def shell(ctx: typer.Context):
             universal_newlines=True,
             shell=True,
             env=os.environ.copy(),
-            executable=user_shell[1],
+            executable=user_shell,
         )
 
         if result.returncode != 0:
@@ -704,26 +731,20 @@ def shell(ctx: typer.Context):
     return True
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
-@logger.catch
-@arcolog()
-def x(ctx: typer.Context, command: str = typer.Argument(...)):
-    args = []
-    command_list = [command]
+def augmentCommand(command):
+    command_list = []
 
-    activate_shell = False
-
-    if ctx.args:
-        args = args + ctx.args
+    logger.debug(f"Augmenting command {command}")
 
     if command in ["ansible-playbook", "ap", "ak"]:
         # Create tempfile with inventory from config
         # arc["clusters"][cluster]["inventory"]
-        inventory = benedict(arc["ansible"]["inventory"])
+
+        inventory = arc["ansible"].get("inventory")
 
         if inventory:
+            inventory = benedict(arc["ansible"]["inventory"])
+
             # Create tempfile
             mounted_inventory = mountConfig(inventory)
 
@@ -757,7 +778,26 @@ def x(ctx: typer.Context, command: str = typer.Argument(...)):
 
         pass
 
-    command_list = command_list + args
+    return command_list
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+@logger.catch
+@arcolog()
+def x(ctx: typer.Context, command: str = typer.Argument(...)):
+    args = []
+    command_list = [command]
+
+    activate_shell = False
+
+    if ctx.args:
+        args = args + ctx.args
+
+    augmentations = augmentCommand(command)
+
+    command_list = command_list + augmentations + args
 
     logger.debug(f"Running command: {' '.join(command_list)}")
 
@@ -784,6 +824,201 @@ def x(ctx: typer.Context, command: str = typer.Argument(...)):
     return True
 
 
+# Load context-config to dict + Contextualize (i.e. make paths absolute)
+# Merge in either direction
+#
+
+
+def mergeContext(data, updated_data):
+    if updated_data:
+        data.merge(updated_data, overwrite=True, concat=False)
+
+    return data
+
+
+def callAPI(api_path: str = None, args=[]):
+    # Gets input like "arco-dev/install"
+    # Or testfolder/subfolder/api-folder/setup
+    # The LAST item of the path is always the "entrypoint" of the API
+    # The first parts (arbitrary number) is the path to the API
+
+    global arc
+
+    api_absolute_path = None
+
+    if not api_path:
+        logger.error(f"No API seletected: {api_path}")
+        sys.exit(1)
+
+    # 1. Split API and Entrypoint
+    if "/" in api_path:
+        api, endpoint = api_path.rsplit("/", 1)
+    else:
+        # Check for and endpoint named "api_path" in local context
+        if ["arco", "api", api_path] in arc:
+            logger.debug(
+                f"Found endpoint '{api_path}' in '{arc['arco']['origins']['arco']['api'][api_path]['entrypoint']}'. Loading its API"
+            )
+            api = os.getcwd()
+            endpoint = api_path
+        else:
+            api = api_path
+            endpoint = "default"
+
+    # 2. Determine absolute path to API
+    if api:
+        logger.debug(f"Calling API '{api}', endpoint '{endpoint}'")
+
+        # Iterate over "lookup_dirs" to auto-discover the API path
+        if api in [".", os.getcwd()]:
+            api_absolute_path = os.getcwd()
+            logger.debug(f"Loading API '{api}' from '{api_absolute_path}'")
+        else:
+            if os.path.isabs(api):
+                api_absolute_path = api
+            else:
+                for lookup_dir in lookup_dirs:
+                    _api_dir = os.path.join(lookup_dir, api)
+                    logger.debug(f"Searching API '{api}' in '{_api_dir}'")
+
+                    if os.path.isdir(_api_dir):
+                        api_absolute_path = _api_dir
+                        logger.debug(f"Loading API '{api}' from '{_api_dir}'")
+                        break
+
+        if not api_absolute_path:
+            logger.error(f"Cannot find API {api}")
+            sys.exit(1)
+    else:
+        logger.error(f"No API selected: {api_path}")
+        sys.exit(1)
+
+    # Setup empty context
+    _context = benedict()
+
+    # Discover additional stuff
+    if arc["arco"]["discover"]:
+        current_dir = os.getcwd()
+
+        # Switch to the path of the API
+        # to discover its context
+        os.chdir(api_absolute_path)
+
+        discovered = discoverContext()
+
+        mergeContext(_context, discovered)
+
+        os.chdir(current_dir)
+
+    # Locate context
+    api_config_file = discoverConfig(api_absolute_path)
+
+    if api_config_file:
+        loaded = loadConfig(api_config_file)
+
+        running_data_sources.append(api_config_file)
+
+        logger.debug(f"Loading API config from '{api_config_file}'")
+        _context = mergeContext(_context, loaded)
+
+    # 3. Setup entrypoints
+    if not endpoint:
+        endpoint = "default"
+
+    # 4. Start routing
+    entrypoint = None
+
+    # 4.1 Prepare API
+    default_api = benedict(
+        {
+            "arco": {
+                "api": {
+                    "default": {"entrypoint": "self"},
+                    "context": {"entrypoint": "self"},
+                    "bypass": {"entrypoint": None},
+                    "shell": {"entrypoint": getShell()},
+                }
+            }
+        }
+    )
+
+    _context = mergeContext(default_api, _context)
+
+    # Check if the endpoint exists or exit
+    if endpoint not in _context["arco"]["api"]:
+        logger.error(f"Endpoint {endpoint} does not exist")
+        sys.exit(1)
+
+    entrypoint = _context["arco"]["api"][endpoint].get("entrypoint")
+    logger.debug(f"Setting entrypoint for endpoint '{endpoint}' to '{entrypoint}'")
+
+    args = _context["arco"]["api"][endpoint].get("args") or args
+    logger.debug(f"Setting args for endpoint '{endpoint}' to '{' '.join(args)}'")
+
+    # If the "entrypoint" is "self", simply return the current context
+    if entrypoint == "self":
+        logger.debug(f"Returning current API context for entrypoint '{entrypoint}'")
+        return _context
+
+    # 5. Merge in base context
+    _arc = arc
+
+    # We're deleting the "api" section of the merged-in context
+    # to not overwrite our current API's "api" settings
+    del _arc["arco"]["api"]
+
+    _context = mergeContext(_context, _arc)
+
+    # 6. Merge current _context to arc
+    # If you wonder why we do this after we merged arc into _context:
+    # When merging arc into _context, we're building the current context
+    # without overwriting the "api" section in _context from arc; additionally,
+    # we're doing this extra step to make sure that updated context from arc overwrites
+    # basic API context definied in _context
+    # Since we pass the arc to the API, we need to update arc with the
+    # contents from _context to have everything set correctly
+    arc = mergeContext(arc, _context)
+
+    # Get command augmentations
+    augmentations = augmentCommand(entrypoint)
+
+    # If the entrypoint is not "self", proceed with running the requested commands
+    command_list = [entrypoint] + augmentations + args
+
+    result = None
+
+    if endpoint == "shell":
+        # We do stuff differently when in shell mode
+        logger.debug(f"Setting shell to {entrypoint}")
+        logger.info("Entering interactive shell. To exit this shell, just run 'exit'")
+
+        result = subprocess.run(
+            command_list,
+            cwd=api_absolute_path,
+            universal_newlines=True,
+            shell=True,
+            env=os.environ.copy(),
+            executable=entrypoint,
+        )
+
+    else:
+        result = subprocess.run(
+            command_list,
+            cwd=api_absolute_path,
+            universal_newlines=True,
+            shell=False,
+            capture_output=True,
+        )
+
+    if result.returncode != 0:
+        logger.error(
+            f"Command '{' '.join(command_list)}' returned exit code {result.returncode}"
+        )
+        sys.exit(result.returncode)
+
+    return result.stdout
+
+
 def version_callback(value: bool):
     if value:
         version = read_version(str(Path(__file__).parent / "__init__.py"))
@@ -797,23 +1032,23 @@ def version_callback(value: bool):
 @logger.catch
 def callback(
     ctx: typer.Context,
-    contexts: Optional[List[str]] = typer.Option(
+    data_sources: Optional[List[str]] = typer.Option(
         None,
-        "--context",
+        "--data",
         help="Context sources to query",
-        envvar=["ARCO_CONTEXT_DIR"],
+        envvar=["ARCO_DATA_DIR"],
         autocompletion=autocomplete_code,
     ),
-    context_files: Optional[List[str]] = typer.Option(
-        None, "--context-file", envvar=["ARCO_CONTEXT_FILE"]
+    data_files: Optional[List[str]] = typer.Option(
+        None, "--context-file", envvar=["ARCO_DATA_FILE"]
     ),
-    code: str = typer.Option(
-        None,
-        "--code",
-        help="The code to load",
-        envvar=["ARCO_CODE_DIR"],
-        autocompletion=autocomplete_code,
-    ),
+    # code: str = typer.Option(
+    #     None,
+    #     "--code",
+    #     help="The code to load",
+    #     envvar=["ARCO_CODE_DIR"],
+    #     autocompletion=autocomplete_code,
+    # ),
     default: bool = typer.Option(
         True,
         help=f"Load default context from {app_dir}",
@@ -895,26 +1130,17 @@ def callback(
         arc["arco"]["name"] = name
         logger.debug(f"Setting name to {name}")
 
-    # Context files to load
-    running_context_files = []
-
     # Load default context from app_dir
     if default and not stdin:
-        _default_config_path = discoverConfig(arc["arco"]["app_dir"])
-        logger.debug(f"Checking {_default_config_path} for context")
-
-        if fsutil.exists(_default_config_path):
-            running_context_files.append(_default_config_path)
-            logger.debug(f"Loading {_default_config_path}")
+        logger.debug(f"Loading defaults ...")
+        _default_context = callAPI(f"{arc['arco']['app_dir']}/context")
+        mergeContext(arc, _default_context)
 
     # Load local context from CWD
     if local and not stdin:
-        _local_config_path = discoverConfig(os.getcwd())
-        logger.debug(f"Checking {_local_config_path} for context")
-
-        if fsutil.exists(_local_config_path):
-            running_context_files.append(_local_config_path)
-            logger.debug(f"Loading {_local_config_path}")
+        logger.debug(f"Loading local context ...")
+        _local_context = callAPI(f"{os.getcwd()}/context")
+        mergeContext(arc, _local_context)
 
     # Populate extra vars for the first time
     # We're doing this twice so we can inject vars to the context
@@ -932,105 +1158,69 @@ def callback(
         # d = benedict(arc)
         arc[key] = value
 
-    if code:
-        code_dir = None
-
-        for lookup_dir in lookup_dirs:
-            _code_dir = os.path.join(lookup_dir, code)
-            logger.debug(f"Checking {_code_dir} for code")
-
-            if os.path.isdir(_code_dir):
-                code_dir = _code_dir
-                logger.debug(f"Found code in {code_dir}")
-
-        if not code_dir:
-            logger.error(f"Cannot find code: {code}")
-            sys.exit(1)
-    else:
-        code_dir = arc["arco"]["code"]["dir"]
-
-    # Discover additional stuff
-    if discover:
-        current_dir = os.getcwd()
-        os.chdir(code_dir)
-
-        discovered = discoverContext()
-
-        arc.merge(discovered, overwrite=True, concat=False)
-
-        os.chdir(current_dir)
-
-    # Locate context
-    code_context_file = discoverConfig(code_dir)
-
-    if code_context_file:
-        if code_context_file not in running_context_files:
-            running_context_files.append(code_context_file)
-            logger.debug(f"Loading {code_context_file}")
-        else:
-            logger.debug(
-                f"Skipping code context {code_context_file} (already discovered)"
-            )
-
-    arc["arco"]["code"]["dir"] = code_dir
-
     # Discover contexts
-    for context in contexts:
-        context_dir = None
+    for data_source in data_sources:
+        logger.debug("Loading context from --data")
+        _context = callAPI(data_source)
 
-        for context_lookup_dir in lookup_dirs:
-            if not context_dir:
-                _context_dir = os.path.join(context_lookup_dir, context)
-                logger.debug(f"Checking {_context_dir} for context")
+        arc = mergeContext(arc, _context)
 
-                if os.path.isdir(_context_dir):
-                    context_dir = _context_dir
-                    logger.debug(f"Found context in {context_dir}")
+    # for context in data_sources:
+    #     context_dir = None
 
-        # Can't find context_dir?
-        # Exit. The user has specified to use it
-        # so we should terminate if it can't be found
-        if not context_dir:
-            logger.error(f"Can't locate context {context}")
-            sys.exit(1)
+    #     for context_lookup_dir in lookup_dirs:
+    #         if not context_dir:
+    #             _context_dir = os.path.join(context_lookup_dir, context)
+    #             logger.debug(f"Checking {_context_dir} for context")
 
-        # Load context
-        context_file = discoverConfig(context_dir)
+    #             if os.path.isdir(_context_dir):
+    #                 context_dir = _context_dir
+    #                 logger.debug(f"Found context in {context_dir}")
 
-        if context_file:
-            if context_file not in running_context_files:
-                running_context_files.append(context_file)
-                logger.debug(f"Loading {context_file}")
-            else:
-                logger.debug(f"Skipping context {context_file} (already discovered)")
+    #     # Can't find context_dir?
+    #     # Exit. The user has specified to use it
+    #     # so we should terminate if it can't be found
+    #     if not context_dir:
+    #         logger.error(f"Can't locate context {context}")
+    #         sys.exit(1)
+
+    #     # Load context
+    #     context_file = discoverConfig(context_dir)
+
+    #     if context_file:
+    #         if context_file not in running_data_sources:
+    #             running_data_sources.append(context_file)
+    #             logger.debug(f"Loading {context_file}")
+    #         else:
+    #             logger.debug(f"Skipping context {context_file} (already discovered)")
 
     # Append context-files (form --context-file)
-    for context_file in context_files:
-        running_context_files.append(context_file)
+    # for context_file in data_files:
+    #     running_data_sources.append(context_file)
 
-    # Loop over running_context_files
+    # Loop over running_data_sources
     # Load and merge
-    for running_context_file in running_context_files:
-        _context = loadConfig(running_context_file)
+    # for running_context_file in running_data_sources:
+    #     _context = loadConfig(running_context_file)
 
-        if _context:
-            # Make context paths absolute
-            _arc_context_dir = arc["arco"]["context"]["dir"]
+    #     if _context:
+    #         # Make context paths absolute
+    #         _arc_context_dir = arc["arco"]["context"]["dir"]
 
-            arc["arco"]["context"]["dir"] = os.path.dirname(running_context_file)
+    #         arc["arco"]["context"]["dir"] = os.path.dirname(running_context_file)
 
-            _context.traverse(contextualizeDict)
+    #         _context.traverse(contextualizeDict)
 
-            keypaths = _context.keypaths(indexes=False)
-            for keypath in keypaths:
-                if not keypath.startswith("arco.origins"):
-                    arc["arco"]["origins"][keypath] = running_context_file
+    #         keypaths = _context.keypaths(indexes=False)
+    #         for keypath in keypaths:
+    #             if not keypath.startswith("arco.origins"):
+    #                 arc["arco"]["origins"][keypath] = running_context_file
 
-            arc.merge(_context, overwrite=True, concat=False)
+    #         arc.merge(_context, overwrite=True, concat=False)
 
-            logger.debug(f"Merged context from {running_context_file}")
+    #         logger.debug(f"Merged context from {running_context_file}")
 
-            arc["arco"]["context"]["dir"] = _arc_context_dir
+    #         arc["arco"]["context"]["dir"] = _arc_context_dir
 
     # Populate extra vars
     if reload_vars:
